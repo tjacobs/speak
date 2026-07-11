@@ -9,7 +9,7 @@ Two tools:
 
 ## Setup
 
-On first run, the model and all voices download into `c/`.
+On first run, the model and all voices download into `cache/`.
 
 ## speak.py
 
@@ -54,3 +54,4 @@ Generated audio files are saved in `audio/`.
 - If a voice is missing, run once with network access to download it.
 - On Jetson, USB audio is configured in `/etc/asound.conf`. Both normal and `sudo aplay` use the USB card.
 - `speak.py` disables CUDA probing on CPU-only devices to avoid driver warnings on Jetson.
+- For Jetson GPU, install PyTorch from the [Jetson AI Lab](https://pypi.jetson-ai-lab.io/jp6/cu126/) index, not standard pip. Both scripts use CUDA automatically when `torch.cuda.is_available()` is true.

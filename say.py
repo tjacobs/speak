@@ -11,10 +11,11 @@ import platform
 import queue
 import termios
 import tty
+import glob
 
 # Cache model downloads next to this script, must be set before importing kokoro
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(SCRIPT_DIR, 'c')
+CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
 MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
 PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
@@ -25,7 +26,21 @@ TORCH_THREADS = '4'
 os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
 os.environ['MKL_NUM_THREADS'] = TORCH_THREADS
 os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+# Parse command line arguments
+def parse_args():
+    force_cpu = False
+    for argument in sys.argv[1:]:
+        if argument == '--cpu':
+            force_cpu = True
+        else:
+            print(f"Unknown argument: {argument}")
+            sys.exit(1)
+    return force_cpu
+
+FORCE_CPU = parse_args()
+if FORCE_CPU:
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Load preset phrases from json file
 def load_phrases():
@@ -66,9 +81,74 @@ import torch
 import soundfile
 
 IMPORT_SECONDS = time.perf_counter() - IMPORT_START
-print(f"Import kokoro: {IMPORT_SECONDS:.2f}s")
+print(f"Import kokoro: {IMPORT_SECONDS:.1f}s")
 
 torch.set_num_threads(int(TORCH_THREADS))
+
+# Pick cuda when available, else cpu
+def pick_device():
+    if FORCE_CPU:
+        return 'cpu'
+    if torch.cuda.is_available():
+        return 'cuda'
+    return 'cpu'
+
+DEVICE = pick_device()
+
+# Cpu governor target for inference
+CPU_GOVERNOR = 'performance'
+
+# Read cpu governor for the first core
+def get_cpu_governor():
+    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+    if not os.path.exists(governor_path):
+        return None
+    with open(governor_path) as governor_file:
+        return governor_file.read().strip()
+
+# Set cpu governor for all cores, return true on success
+def set_cpu_governor(governor):
+    for cpu_index in range(64):
+        governor_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
+        if not os.path.exists(governor_path):
+            break
+        try:
+            with open(governor_path, 'w') as governor_file:
+                governor_file.write(governor)
+        except OSError:
+            return False
+    return True
+
+# Read jetson gpu clock in mhz from sysfs
+def read_gpu_frequency_mhz():
+    frequency_paths = glob.glob('/sys/class/devfreq/*gpu*/cur_freq')
+    if not frequency_paths:
+        return None
+    with open(frequency_paths[0]) as frequency_file:
+        hertz = int(frequency_file.read().strip())
+    return hertz / 1_000_000
+
+# Print cpu, gpu, and device info
+def print_system_info(governor_set):
+    current_governor = get_cpu_governor() or 'unknown'
+    if governor_set and current_governor == CPU_GOVERNOR:
+        print(f"CPU: {current_governor}")
+    else:
+        print(f"CPU: {current_governor} (run with sudo to change)")
+    if DEVICE == 'cuda':
+        properties = torch.cuda.get_device_properties(0)
+        frequency = read_gpu_frequency_mhz()
+        clock_text = f"{frequency / 1000:.1f}GHz" if frequency else "unknown"
+        memory_gigabytes = properties.total_memory / 1024 / 1024 / 1024
+        print(f"GPU: {properties.name}, {memory_gigabytes:.1f}GB memory, clock {clock_text}")
+    elif FORCE_CPU:
+        print("GPU: disabled")
+    else:
+        print("GPU: not available")
+    print(f"Device: {DEVICE}")
+
+GOVERNOR_SET = set_cpu_governor(CPU_GOVERNOR)
+print_system_info(GOVERNOR_SET)
 
 # Model repo
 REPO_ID = 'hexgrad/Kokoro-82M'
@@ -80,7 +160,7 @@ SPEED_STEP = 0.1
 SPEED_MIN = 0.5
 SPEED_MAX = 2.0
 AUDIO_SAMPLE_RATE = 24000
-REALTIME_DECIMALS = 2
+REALTIME_DECIMALS = 1
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 AUDIO_NAME_WIDTH = 3
 
@@ -465,7 +545,7 @@ class SpeechEngine:
             if 'HF_HUB_OFFLINE' in os.environ:
                 del os.environ['HF_HUB_OFFLINE']
 
-            self.model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to('cpu').eval()
+            self.model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to(DEVICE).eval()
             lang_code = self.voice[0]
             self.pipeline = self.get_pipeline(lang_code)
             self.preload_voices()
@@ -492,7 +572,6 @@ class SpeechEngine:
                     write_line(format_status(self, state='loading', message=f"Skipped voice {voice}: {format_error(error)}"))
         lang_code = self.voice[0]
         self.pipeline = self.get_pipeline(lang_code)
-        print_status(self, f"Loaded {voices_loaded} voices.")
 
         # Use offline mode after voices are cached
         if voices_loaded == len(VOICES):

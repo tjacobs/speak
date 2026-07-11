@@ -2,6 +2,7 @@
 
 # Imports needed before cache setup and timing
 import os
+import sys
 import time
 
 # Start script timer
@@ -9,23 +10,46 @@ STARTUP_START = time.perf_counter()
 
 # Cache model downloads next to this script, must be set before importing kokoro
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(SCRIPT_DIR, 'c')
+CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
 MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
 os.environ['HF_HUB_VERBOSITY'] = 'error'
 
-# Use local cache only when the model is already downloaded
-if os.path.isdir(MODEL_CACHE_DIR) and os.listdir(MODEL_CACHE_DIR):
-    os.environ['HF_HUB_OFFLINE'] = '1'
+# Default voice for speak.py
+DEFAULT_VOICE = 'bm_fable'
+
+# Parse command line arguments
+def parse_args():
+    force_cpu = False
+    for argument in sys.argv[1:]:
+        if argument == '--cpu':
+            force_cpu = True
+        else:
+            print(f"Unknown argument: {argument}")
+            sys.exit(1)
+    return force_cpu
+
+FORCE_CPU = parse_args()
+if FORCE_CPU:
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+# Use local cache only when model and voice are already downloaded
+def enable_offline_if_cached(voice):
+    if not os.path.isdir(MODEL_CACHE_DIR) or not os.listdir(MODEL_CACHE_DIR):
+        return
+    for snapshot_name in os.listdir(MODEL_CACHE_DIR):
+        voice_path = os.path.join(MODEL_CACHE_DIR, snapshot_name, 'voices', voice + '.pt')
+        if os.path.isfile(voice_path):
+            os.environ['HF_HUB_OFFLINE'] = '1'
+            return
+
+enable_offline_if_cached(DEFAULT_VOICE)
 
 # Limit torch thread pools before kokoro imports torch
 TORCH_THREADS = '4'
 os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
 os.environ['MKL_NUM_THREADS'] = TORCH_THREADS
 os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
-
-# CPU only, skip cuda init on Jetson where driver does not match pip torch
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Ignore warnings
 import warnings
@@ -42,6 +66,16 @@ import kokoro
 import torch
 KOKORO_SECONDS = time.perf_counter() - KOKORO_START
 
+# Pick cuda when available, else cpu
+def pick_device():
+    if FORCE_CPU:
+        return 'cpu'
+    if torch.cuda.is_available():
+        return 'cuda'
+    return 'cpu'
+
+DEVICE = pick_device()
+
 # Pin torch to all pi cores
 torch.set_num_threads(int(TORCH_THREADS))
 
@@ -49,6 +83,7 @@ import soundfile
 import subprocess
 import platform
 import random
+import glob
 
 # Model repo
 REPO_ID = 'hexgrad/Kokoro-82M'
@@ -59,7 +94,7 @@ SPEECH_SPEED = 1.2
 CPU_GOVERNOR = 'performance'
 
 # Timing format
-SECONDS_DECIMALS = 2
+SECONDS_DECIMALS = 1
 AUDIO_SAMPLE_RATE = 24000
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 AUDIO_NAME_WIDTH = 3
@@ -88,15 +123,15 @@ def main():
 
     # Set cpu governor to performance, restore when done
     saved_governor = get_cpu_governor()
-    print_governor_change(saved_governor, set_cpu_governor(CPU_GOVERNOR))
-    print_speed_opts()
+    governor_set = set_cpu_governor(CPU_GOVERNOR)
+    print_system_info(governor_set)
 
     # Start run timer
     run_start = time.perf_counter()
 
     try:
-        # Pick a random voice
-        voice = "am_echo"
+        # Pick default voice
+        voice = DEFAULT_VOICE
         #voice = random.choice(VOICES)
         print("Voice: " + voice)
 
@@ -139,32 +174,41 @@ def set_cpu_governor(governor):
             return False
     return True
 
-# Print whether cpu governor was switched to performance
-def print_governor_change(saved_governor, governor_set):
-    current_governor = get_cpu_governor()
+# Print cpu, gpu, and device info
+def print_system_info(governor_set):
+    current_governor = get_cpu_governor() or 'unknown'
     if governor_set and current_governor == CPU_GOVERNOR:
-        if saved_governor == CPU_GOVERNOR:
-            print(f"CPU governor: using {CPU_GOVERNOR}")
-        else:
-            print(f"CPU governor: {saved_governor} -> {CPU_GOVERNOR}")
+        print(f"CPU: {current_governor}")
     else:
-        print(f"CPU governor: {current_governor} (could not set {CPU_GOVERNOR}, need sudo)")
+        print(f"CPU: {current_governor} (run with sudo to change)")
+    if DEVICE == 'cuda':
+        properties = torch.cuda.get_device_properties(0)
+        frequency = read_gpu_frequency_mhz()
+        clock_text = f"{frequency / 1000:.1f}GHz" if frequency else "unknown"
+        memory_gigabytes = properties.total_memory / 1024 / 1024 / 1024
+        print(f"GPU: {properties.name}, {memory_gigabytes:.1f}GB memory, clock {clock_text}")
+    elif FORCE_CPU:
+        print("GPU: disabled")
+    else:
+        print("GPU: not available")
+    print(f"Device: {DEVICE}")
 
-# Print active speed tweaks
-def print_speed_opts():
-    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
-    governor = 'unknown'
-    if os.path.exists(governor_path):
-        with open(governor_path) as governor_file:
-            governor = governor_file.read().strip()
-    print(f"Opts: disable_complex={DISABLE_COMPLEX}, speech_speed={SPEECH_SPEED}, threads={TORCH_THREADS}, governor={governor}")
+# Read jetson gpu clock in mhz from sysfs
+def read_gpu_frequency_mhz():
+    frequency_paths = glob.glob('/sys/class/devfreq/*gpu*/cur_freq')
+    if not frequency_paths:
+        return None
+    with open(frequency_paths[0]) as frequency_file:
+        hertz = int(frequency_file.read().strip())
+    return hertz / 1_000_000
 
 # Generate audio for the text and play each chunk
 def generate_and_play(voice, text):
     # Load the model and pipeline
     pipeline_start = time.perf_counter()
-    model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to('cpu').eval()
+    model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to(DEVICE).eval()
     pipeline = kokoro.KPipeline(lang_code=voice[0], repo_id=REPO_ID, model=model)
+    pipeline.load_voice(voice)
     log_timing("Load pipeline", pipeline_start)
 
     # Audio player, afplay on mac, aplay on linux
@@ -198,7 +242,7 @@ def generate_and_play(voice, text):
 
 # Print chunk timing column headers
 def print_chunk_timing_header():
-    print(f"{'chunk':>{CHUNK_COL_WIDTH}}  {'generate':>{TIMING_COL_WIDTH}}  {'play':>{TIMING_COL_WIDTH}}  {'speed':>{SPEED_COL_WIDTH}}")
+    print(f"{'Wav':>{CHUNK_COL_WIDTH}}  {'Generate':>{TIMING_COL_WIDTH}}  {'Play':>{TIMING_COL_WIDTH}}  {'Speed':>{SPEED_COL_WIDTH}}")
 
 # Print one chunk row with aligned generate and play times
 def log_chunk_timing(index, generate_seconds, play_seconds, audio_seconds):
