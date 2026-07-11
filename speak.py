@@ -17,6 +17,12 @@ os.environ['HF_HUB_CACHE'] = CACHE_DIR
 if os.path.isdir(MODEL_CACHE_DIR) and os.listdir(MODEL_CACHE_DIR):
     os.environ['HF_HUB_OFFLINE'] = '1'
 
+# Limit torch thread pools before kokoro imports torch
+TORCH_THREADS = '4'
+os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
+os.environ['MKL_NUM_THREADS'] = TORCH_THREADS
+os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
+
 # Ignore warnings
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.modules.rnn')
@@ -25,7 +31,11 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='torch.nn.utils
 # Imports
 KOKORO_START = time.perf_counter()
 import kokoro
+import torch
 KOKORO_SECONDS = time.perf_counter() - KOKORO_START
+
+# Pin torch to all pi cores
+torch.set_num_threads(int(TORCH_THREADS))
 
 import soundfile
 import subprocess
@@ -34,6 +44,11 @@ import random
 
 # Model repo
 REPO_ID = 'hexgrad/Kokoro-82M'
+
+# Speed tweaks
+DISABLE_COMPLEX = True
+SPEECH_SPEED = 1.2
+CPU_GOVERNOR = 'performance'
 
 # Timing format
 SECONDS_DECIMALS = 2
@@ -61,20 +76,29 @@ def main():
     # Print kokoro import timing
     print_import_timing()
 
+    # Set cpu governor to performance, restore when done
+    saved_governor = get_cpu_governor()
+    print_governor_change(saved_governor, set_cpu_governor(CPU_GOVERNOR))
+    print_speed_opts()
+
     # Start run timer
     run_start = time.perf_counter()
 
-    # Pick a random voice
-    voice = "am_echo"
-    #voice = random.choice(VOICES)
-    print("Voice: " + voice)
+    try:
+        # Pick a random voice
+        voice = "am_echo"
+        #voice = random.choice(VOICES)
+        print("Voice: " + voice)
 
-    # Generate audio and play it
-    generate_and_play(voice, TEXT)
+        # Generate audio and play it
+        generate_and_play(voice, TEXT)
 
-    # Print total time
-    log_timing("run total", run_start)
-    log_timing("script total", STARTUP_START)
+        # Print total time
+        log_timing("run total", run_start)
+        log_timing("script total", STARTUP_START)
+    finally:
+        if saved_governor:
+            set_cpu_governor(saved_governor)
 
 # Print kokoro import timing
 def print_import_timing():
@@ -84,11 +108,53 @@ def print_import_timing():
 def log_elapsed(label, seconds):
     print(f"{label}: {format_seconds(seconds)}")
 
+# Read cpu governor for the first core
+def get_cpu_governor():
+    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+    if not os.path.exists(governor_path):
+        return None
+    with open(governor_path) as governor_file:
+        return governor_file.read().strip()
+
+# Set cpu governor for all cores, return true on success
+def set_cpu_governor(governor):
+    for cpu_index in range(64):
+        governor_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
+        if not os.path.exists(governor_path):
+            break
+        try:
+            with open(governor_path, 'w') as governor_file:
+                governor_file.write(governor)
+        except OSError:
+            return False
+    return True
+
+# Print whether cpu governor was switched to performance
+def print_governor_change(saved_governor, governor_set):
+    current_governor = get_cpu_governor()
+    if governor_set and current_governor == CPU_GOVERNOR:
+        if saved_governor == CPU_GOVERNOR:
+            print(f"cpu governor: using {CPU_GOVERNOR}")
+        else:
+            print(f"cpu governor: {saved_governor} -> {CPU_GOVERNOR}")
+    else:
+        print(f"cpu governor: {current_governor} (could not set {CPU_GOVERNOR}, need sudo)")
+
+# Print active speed tweaks
+def print_speed_opts():
+    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+    governor = 'unknown'
+    if os.path.exists(governor_path):
+        with open(governor_path) as governor_file:
+            governor = governor_file.read().strip()
+    print(f"opts: disable_complex={DISABLE_COMPLEX}, speech_speed={SPEECH_SPEED}, threads={TORCH_THREADS}, governor={governor}")
+
 # Generate audio for the text and play each chunk
 def generate_and_play(voice, text):
     # Load the model and pipeline
     pipeline_start = time.perf_counter()
-    pipeline = kokoro.KPipeline(lang_code=voice[0], repo_id=REPO_ID)
+    model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to('cpu').eval()
+    pipeline = kokoro.KPipeline(lang_code=voice[0], repo_id=REPO_ID, model=model)
     log_timing("load pipeline", pipeline_start)
 
     # Audio player, afplay on mac, aplay on linux
@@ -97,7 +163,7 @@ def generate_and_play(voice, text):
     # Generate, write, and play each chunk
     print_chunk_timing_header()
     chunk_start = time.perf_counter()
-    generator = pipeline(text, voice=voice)
+    generator = pipeline(text, voice=voice, speed=SPEECH_SPEED)
     for index, (graphemes, phonemes, audio) in enumerate(generator):
         # Time chunk generation
         generate_seconds = time.perf_counter() - chunk_start
