@@ -29,23 +29,7 @@ Interactive speech tool for controlling a robot over SSH. Phrases queue in the b
 ./talk.py
 ```
 
-Single keypresses work without Enter. Preset phrases are defined in `phrases.json` and triggered by number keys.
-
-### Preset phrases
-
-| Key | Default phrase |
-|-----|----------------|
-| 1 | hi there |
-| 2 | hello there |
-| 3 | wowee! |
-| 4 | beep boop! |
-| 5 | bye for now! |
-| 6 | thank you! |
-| 7 | yes please |
-| 8 | no thanks |
-| 9 | that's what you think! |
-
-Edit `phrases.json` to change these.
+Single keypresses work without Enter. Preset phrases are in `phrases.json`, triggered by keys `1`–`9`.
 
 ### Controls
 
@@ -57,7 +41,6 @@ Edit `phrases.json` to change these.
 | `x` | Clear queued speech |
 | `+` / `-` | Speed up / down |
 | `v` | Next voice |
-| `s` | Show status |
 | `h` | Show help |
 | `q` | Quit |
 

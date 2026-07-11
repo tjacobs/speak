@@ -46,7 +46,6 @@ def print_banner(phrases):
     print("  +  faster")
     print("  -  slower")
     print("  v  next voice")
-    print("  s  show status")
     print("  h  show help")
     print("  q  quit")
     print()
@@ -212,11 +211,6 @@ def run_input_loop(engine, phrases):
         if key in ('v', 'V'):
             if engine.next_voice():
                 print_status(engine, f"Voice {engine.voice}.")
-            continue
-
-        # Status
-        if key in ('s', 'S'):
-            print_status(engine, engine.status_text())
             continue
 
         # Help
@@ -434,10 +428,6 @@ class SpeechEngine:
     # Return current state label
     def state_label(self):
         return self.state
-
-    # Return status summary text
-    def status_text(self):
-        return f"{self.state}, queue {self.queue_size()}, {self.voice}, speed {self.speed:.1f}, realtime {self.last_realtime_speed}"
 
     # Background loop that loads model and speaks queued phrases
     def worker_loop(self):
