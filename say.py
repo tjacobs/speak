@@ -36,10 +36,11 @@ PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
 os.environ['HF_HUB_VERBOSITY'] = 'error'
+os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
 
 # Config timeouts
 LOAD_TIMEOUT_SECONDS = 20
-TEST_WAIT_SECONDS = 300
+TEST_WAIT_SECONDS = 30
 
 # Config status display
 STATUS_STATE_WIDTH = 8
@@ -47,12 +48,16 @@ STATUS_QUEUE_WIDTH = 2
 STATUS_VOICE_WIDTH = 11
 STATUS_SPEED_WIDTH = 4
 STATUS_REALTIME_WIDTH = 5
+
+# Config audio player
 PLAYER = 'afplay' if platform.system() == 'Darwin' else 'aplay'
 
-# Config stats and device
-KOKORO_SECONDS = 0
+# Config device
 DEVICE = 'cpu'
 FORCE_CPU = False
+
+# State
+KOKORO_SECONDS = 0
 TEST_MODE = False
 OUTPUT_LOCK = threading.Lock()
 
@@ -70,7 +75,10 @@ def main():
     print_system_info(perf_set)
 
     # Quit early when audio playback is unavailable
-    check_ready()
+    player_ok, player_error = check_audio_player()
+    if not player_ok:
+        print(f'Audio playback unavailable: {player_error}')
+        sys.exit(1)
 
     # Start the speech engine
     engine = SpeechEngine()
@@ -117,7 +125,8 @@ def init():
         os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     # Enable offline mode when cached
-    enable_offline_if_cached()
+    if all_voices_cached():
+        os.environ['HF_HUB_OFFLINE'] = '1'
 
     # Limit torch thread pools before kokoro imports torch
     os.environ['OMP_NUM_THREADS'] = '4'
@@ -142,13 +151,7 @@ def init():
     KOKORO_SECONDS = time.perf_counter() - kokoro_start
     DEVICE = pick_device()
     torch.set_num_threads(4)
-    print_import_timing()
-
-# Quit when audio playback is unavailable
-def check_ready():
-    player_ok, player_error = check_audio_player()
-    if not player_ok:
-        exit_error(f'Audio playback unavailable: {player_error}')
+    print(f"Import kokoro: {KOKORO_SECONDS:.1f}s")
 
 # Queue two preset phrases and wait for speech to finish
 def run_test_loop(engine, phrases):
@@ -181,39 +184,39 @@ def run_input_loop(engine, phrases):
             text = engine.get_last_custom()
             if text:
                 engine.enqueue(text)
-                print_status(engine, f"Repeat: {text}")
+                write_status(format_status(engine, f"Repeat: {text}"))
             else:
-                print_status(engine, "No custom phrase to repeat.")
+                write_status(format_status(engine, "No custom phrase to repeat."))
             continue
 
         # Cancel current speech
         if key in ('c', 'C'):
             if engine.cancel_current():
-                print_status(engine, "Cancelled current speech.")
+                write_status(format_status(engine, "Cancelled current speech."))
             continue
 
         # Clear queue
         if key in ('x', 'X'):
             engine.clear_queue()
-            print_status(engine, "Queue cleared.")
+            write_status(format_status(engine, "Queue cleared."))
             continue
 
         # Speed up
         if key in ('+', '='):
             engine.change_speed(SPEED_STEP)
-            print_status(engine, f"Speed {engine.speed:.1f}.")
+            write_status(format_status(engine, f"Speed {engine.speed:.1f}."))
             continue
 
         # Speed down
         if key in ('-', '_'):
             engine.change_speed(-SPEED_STEP)
-            print_status(engine, f"Speed {engine.speed:.1f}.")
+            write_status(format_status(engine, f"Speed {engine.speed:.1f}."))
             continue
 
         # Next voice
         if key in ('v', 'V'):
             if engine.next_voice():
-                print_status(engine, f"Voice {engine.voice}.")
+                write_status(format_status(engine, f"Voice {engine.voice}."))
             continue
 
         # Help
@@ -224,18 +227,18 @@ def run_input_loop(engine, phrases):
         # Preset phrase keys
         if key in phrases:
             engine.enqueue(phrases[key])
-            print_status(engine, f"Queued: {phrases[key]}")
+            write_status(format_status(engine, f"Queued: {phrases[key]}"))
             continue
 
         # Ignore other keys
         if key not in ('\r', '\n'):
-            print_status(engine, f"Unknown key: {repr(key)}")
+            write_status(format_status(engine, f"Unknown key: {repr(key)}"))
 
 # Wait until engine is idle with an empty queue
 def wait_until_idle(engine):
     deadline = time.time() + TEST_WAIT_SECONDS
     while time.time() < deadline:
-        if engine.state == 'idle' and engine.queue_size() == 0 and engine.player_process is None:
+        if engine.state == 'idle' and engine.queue.qsize() == 0 and engine.player_process is None:
             return
         time.sleep(0.1)
     write_line("Test timed out.")
@@ -278,23 +281,15 @@ def print_system_info(perf_set):
         print("GPU: not available")
     print(f"Device: {DEVICE}")
 
-# Print kokoro import timing
-def print_import_timing():
-    print(f"Import kokoro: {KOKORO_SECONDS:.1f}s")
-
-# Print a status line
-def print_status(engine, message):
-    write_status(format_status(engine, None, message))
-
 # Format aligned status prefix
-def format_status(engine, state, message):
-    state_label = state if state is not None else engine.state_label()
+def format_status(engine, message, state=None):
+    state_label = state if state is not None else engine.state
     if engine.last_realtime_speed is None:
         realtime = f"{'--':>{STATUS_REALTIME_WIDTH}}"
     else:
-        realtime = f"{format_realtime(engine.last_realtime_speed):>{STATUS_REALTIME_WIDTH}}"
+        realtime = f"{f'{engine.last_realtime_speed:.1f}x':>{STATUS_REALTIME_WIDTH}}"
     prefix = (
-        f"[{state_label:<{STATUS_STATE_WIDTH}} | queue {engine.queue_size():>{STATUS_QUEUE_WIDTH}} | "
+        f"[{state_label:<{STATUS_STATE_WIDTH}} | queue {engine.queue.qsize():>{STATUS_QUEUE_WIDTH}} | "
         f"{engine.voice:<{STATUS_VOICE_WIDTH}} | "
         f"{engine.speed:>{STATUS_SPEED_WIDTH}.1f}x | {realtime}]"
     )
@@ -355,11 +350,6 @@ def check_audio_player():
             return False, 'no audio device found'
     return True, None
 
-# Print error and exit
-def exit_error(message):
-    print(message)
-    sys.exit(1)
-
 # Format exception text for status lines
 def format_error(error):
     text = str(error).strip()
@@ -372,10 +362,6 @@ def format_error(error):
     if len(text) > 80:
         return text[:77] + '...'
     return text
-
-# Format realtime generation speed for status output
-def format_realtime(speed):
-    return f"{speed:.1f}x"
 
 # Read cpu scaling mode for the first core
 def get_cpu_mode():
@@ -438,7 +424,7 @@ class SpeechEngine:
         self.available_voices = set()
         self.pipelines = {}
         self.load_failed = False
-
+        self.load_complete = False
     # Store last typed custom phrase
     def set_last_custom(self, text):
         with self.lock:
@@ -458,7 +444,7 @@ class SpeechEngine:
         print("Loading model...")
         load_start = time.perf_counter()
         self.queue.put(('__load__', None, None, None))
-        while self.model is None and self.running and not self.load_failed:
+        while not self.load_complete and self.running and not self.load_failed:
             if time.perf_counter() - load_start > LOAD_TIMEOUT_SECONDS:
                 self.load_failed = True
                 self.running = False
@@ -467,10 +453,12 @@ class SpeechEngine:
             time.sleep(0.1)
         if self.load_failed:
             return
-        if self.model is not None:
+        if self.load_complete:
             load_seconds = time.perf_counter() - load_start
             print(f"Load model: {load_seconds:.1f}s")
-            print_status(self, "Ready.")
+            with OUTPUT_LOCK:
+                sys.stdout.write('\n\r\033[K' + format_status(self, "Ready."))
+                sys.stdout.flush()
 
     # Stop worker and cancel playback
     def stop(self):
@@ -507,11 +495,11 @@ class SpeechEngine:
             cleared = self.clear_queue()
         detail = format_error(error)
         if context:
-            write_line(format_status(self, 'error', f"{context}: {detail}"))
+            write_line(format_status(self, f"{context}: {detail}", 'error'))
         else:
-            write_line(format_status(self, 'error', detail))
+            write_line(format_status(self, detail, 'error'))
         if clear_queue and cleared:
-            write_status(format_status(self, None, 'Queue cleared after error.'))
+            write_status(format_status(self, 'Queue cleared after error.'))
 
     # Remove all queued phrases, return count removed
     def clear_queue(self):
@@ -544,7 +532,7 @@ class SpeechEngine:
                     self.voice_index = index
                     self.voice = voice
                 return True
-        write_line(format_status(self, 'error', 'Voice change failed: no voices available.'))
+        write_line(format_status(self, 'Voice change failed: no voices available.', 'error'))
         return False
 
     # Get pipeline for a language code
@@ -567,16 +555,8 @@ class SpeechEngine:
             self.available_voices.add(voice)
             return True
         except Exception as error:
-            write_line(format_status(self, 'error', f"Voice {voice} unavailable: {format_error(error)}"))
+            write_line(format_status(self, f"Voice {voice} unavailable: {format_error(error)}", 'error'))
             return False
-
-    # Return queue size excluding control messages
-    def queue_size(self):
-        return self.queue.qsize()
-
-    # Return current state label
-    def state_label(self):
-        return self.state
 
     # Background loop that loads model and speaks queued phrases
     def worker_loop(self):
@@ -614,9 +594,11 @@ class SpeechEngine:
             self.pipeline = self.get_pipeline(lang_code)
             self.preload_voices()
             self.state = 'idle'
+            self.load_complete = True
         except Exception as error:
             self.model = None
             self.pipeline = None
+            self.load_complete = False
             self.load_failed = True
             self.running = False
             print(f'\nModel load failed: {format_error(error)}')
@@ -624,7 +606,7 @@ class SpeechEngine:
     # Preload all voices so switching works offline later
     def preload_voices(self):
         if not all_voices_cached():
-            enable_online_for_downloads()
+            os.environ.pop('HF_HUB_OFFLINE', None)
 
         skipped = []
         voices_loaded = 0
@@ -664,7 +646,7 @@ class SpeechEngine:
 
         self.cancel_flag.clear()
         self.state = 'speaking'
-        print_status(self, f"Speaking: {text}")
+        write_status(format_status(self, f"Speaking: {text}"))
 
         total_audio_seconds = 0
         total_generate_seconds = 0
@@ -703,7 +685,7 @@ class SpeechEngine:
         self.state = 'idle'
         if not self.cancel_flag.is_set() and total_generate_seconds > 0:
             self.last_realtime_speed = total_audio_seconds / total_generate_seconds
-            print_status(self, "Done.")
+            write_status(format_status(self, "Done."))
 
     # Play wav file and allow cancellation
     def play_wav(self, wav_path):
@@ -748,9 +730,6 @@ def all_voices_cached():
             return False
     return True
 
-# Allow huggingface downloads when voices are missing from cache
-def enable_online_for_downloads():
-    os.environ.pop('HF_HUB_OFFLINE', None)
 
 # Return true when public internet responds to ping
 def network_available():
