@@ -16,8 +16,6 @@ Both use CUDA when available. Pass `--cpu` to force CPU inference.
 ./say.py --cpu
 ```
 
-On startup both print import time, CPU info, GPU info, and device. With `--cpu`, GPU shows as `disabled`.
-
 ## Setup
 
 On first run, the model and all voices download into `cache/`.
