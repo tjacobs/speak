@@ -9,21 +9,21 @@ Two tools:
 
 ## Setup
 
-On first run, the model and all voices download from Hugging Face into `cache/`. After that, `talk.py` works offline.
+On first run, the model and all voices download from Hugging Face into `cache/`.
 
 ## speak.py
 
-Speak a single block of text. Edit the `TEXT` constant in `speak.py` to change what is spoken, or set a voice from the `VOICES` list.
+Speak a single block of text. Edit the `TEXT` constant in `speak.py` to change what is spoken.
 
 ```bash
 ./speak.py
 ```
 
-Generated audio is written as `0.wav`, `1.wav`, etc, one file per text chunk. Audio plays with `afplay` on macOS and `aplay` on Linux.
+Generated audio is written as `0.wav`, `1.wav`, etc, one file per text chunk.
 
 ## talk.py
 
-Interactive speech tool for controlling a robot over SSH. Phrases queue in the background so you can keep typing while it speaks.
+Interactive speech tool for controlling a robot over SSH. Phrases queue in the background.
 
 ```bash
 ./talk.py
@@ -45,8 +45,6 @@ Single keypresses work without Enter. Preset phrases are in `phrases.json`, trig
 | `q` | Quit |
 
 Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
-
-On speech errors, playback stops, the queue is cleared, and a short error message is shown. The worker keeps running so you can continue. Voice changes skip unavailable voices without clearing the queue.
 
 Generated audio files are saved in `audio/`.
 

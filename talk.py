@@ -531,8 +531,8 @@ class SpeechEngine:
                 total_generate_seconds += generate_seconds
 
                 # Write wav file
-                self.audio_counter += 1
                 wav_name = str(self.audio_counter).zfill(AUDIO_NAME_WIDTH) + '.wav'
+                self.audio_counter += 1
                 wav_path = os.path.join(AUDIO_DIR, wav_name)
                 soundfile.write(wav_path, audio, AUDIO_SAMPLE_RATE)
 
