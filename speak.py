@@ -91,7 +91,8 @@ REPO_ID = 'hexgrad/Kokoro-82M'
 # Speed tweaks
 DISABLE_COMPLEX = True
 SPEECH_SPEED = 1.2
-CPU_GOVERNOR = 'performance'
+CPU_PERF_MODE = 'performance'
+CPU_SCALING_FILE = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
 
 # Timing format
 SECONDS_DECIMALS = 1
@@ -121,10 +122,10 @@ def main():
     # Print kokoro import timing
     print_import_timing()
 
-    # Set cpu governor to performance, restore when done
-    saved_governor = get_cpu_governor()
-    governor_set = set_cpu_governor(CPU_GOVERNOR)
-    print_system_info(governor_set)
+    # Set cpu perf mode to performance, restore when done
+    saved_cpu_mode = get_cpu_mode()
+    perf_set = set_cpu_mode(CPU_PERF_MODE)
+    print_system_info(perf_set)
 
     # Start run timer
     run_start = time.perf_counter()
@@ -142,8 +143,8 @@ def main():
         log_timing("Run total", run_start)
         log_timing("Script total", STARTUP_START)
     finally:
-        if saved_governor:
-            set_cpu_governor(saved_governor)
+        if saved_cpu_mode:
+            set_cpu_mode(saved_cpu_mode)
 
 # Print kokoro import timing
 def print_import_timing():
@@ -153,34 +154,33 @@ def print_import_timing():
 def log_elapsed(label, seconds):
     print(f"{label}: {format_seconds(seconds)}")
 
-# Read cpu governor for the first core
-def get_cpu_governor():
-    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
-    if not os.path.exists(governor_path):
+# Read cpu scaling mode for the first core
+def get_cpu_mode():
+    if not os.path.exists(CPU_SCALING_FILE):
         return None
-    with open(governor_path) as governor_file:
-        return governor_file.read().strip()
+    with open(CPU_SCALING_FILE) as scaling_file:
+        return scaling_file.read().strip()
 
-# Set cpu governor for all cores, return true on success
-def set_cpu_governor(governor):
+# Set cpu scaling mode for all cores, return true on success
+def set_cpu_mode(mode):
     for cpu_index in range(64):
-        governor_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
-        if not os.path.exists(governor_path):
+        scaling_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
+        if not os.path.exists(scaling_path):
             break
         try:
-            with open(governor_path, 'w') as governor_file:
-                governor_file.write(governor)
+            with open(scaling_path, 'w') as scaling_file:
+                scaling_file.write(mode)
         except OSError:
             return False
     return True
 
 # Print cpu, gpu, and device info
-def print_system_info(governor_set):
-    current_governor = get_cpu_governor() or 'unknown'
-    if governor_set and current_governor == CPU_GOVERNOR:
-        print(f"CPU: {current_governor}")
+def print_system_info(perf_set):
+    current_cpu_mode = get_cpu_mode() or 'unknown'
+    if perf_set and current_cpu_mode == CPU_PERF_MODE:
+        print(f"CPU: {current_cpu_mode}")
     else:
-        print(f"CPU: {current_governor} (run with sudo to change)")
+        print(f"CPU: {current_cpu_mode} (run with sudo to change)")
     if DEVICE == 'cuda':
         properties = torch.cuda.get_device_properties(0)
         frequency = read_gpu_frequency_mhz()

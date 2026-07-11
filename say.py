@@ -95,26 +95,25 @@ def pick_device():
 
 DEVICE = pick_device()
 
-# Cpu governor target for inference
-CPU_GOVERNOR = 'performance'
+CPU_PERF_MODE = 'performance'
+CPU_SCALING_FILE = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
 
-# Read cpu governor for the first core
-def get_cpu_governor():
-    governor_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
-    if not os.path.exists(governor_path):
+# Read cpu scaling mode for the first core
+def get_cpu_mode():
+    if not os.path.exists(CPU_SCALING_FILE):
         return None
-    with open(governor_path) as governor_file:
-        return governor_file.read().strip()
+    with open(CPU_SCALING_FILE) as scaling_file:
+        return scaling_file.read().strip()
 
-# Set cpu governor for all cores, return true on success
-def set_cpu_governor(governor):
+# Set cpu scaling mode for all cores, return true on success
+def set_cpu_mode(mode):
     for cpu_index in range(64):
-        governor_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
-        if not os.path.exists(governor_path):
+        scaling_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
+        if not os.path.exists(scaling_path):
             break
         try:
-            with open(governor_path, 'w') as governor_file:
-                governor_file.write(governor)
+            with open(scaling_path, 'w') as scaling_file:
+                scaling_file.write(mode)
         except OSError:
             return False
     return True
@@ -129,12 +128,12 @@ def read_gpu_frequency_mhz():
     return hertz / 1_000_000
 
 # Print cpu, gpu, and device info
-def print_system_info(governor_set):
-    current_governor = get_cpu_governor() or 'unknown'
-    if governor_set and current_governor == CPU_GOVERNOR:
-        print(f"CPU: {current_governor}")
+def print_system_info(perf_set):
+    current_cpu_mode = get_cpu_mode() or 'unknown'
+    if perf_set and current_cpu_mode == CPU_PERF_MODE:
+        print(f"CPU: {current_cpu_mode}")
     else:
-        print(f"CPU: {current_governor} (run with sudo to change)")
+        print(f"CPU: {current_cpu_mode} (run with sudo to change)")
     if DEVICE == 'cuda':
         properties = torch.cuda.get_device_properties(0)
         frequency = read_gpu_frequency_mhz()
@@ -147,8 +146,8 @@ def print_system_info(governor_set):
         print("GPU: not available")
     print(f"Device: {DEVICE}")
 
-GOVERNOR_SET = set_cpu_governor(CPU_GOVERNOR)
-print_system_info(GOVERNOR_SET)
+CPU_PERF_SET = set_cpu_mode(CPU_PERF_MODE)
+print_system_info(CPU_PERF_SET)
 
 # Model repo
 REPO_ID = 'hexgrad/Kokoro-82M'

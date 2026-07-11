@@ -59,13 +59,3 @@ Generated audio files are saved in `audio/`.
 ## Notes
 
 - First `say.py` launch downloads all voices and takes longer. Later launches are faster.
-- If a voice is missing, run once with network access to download it.
-- On Jetson, USB audio is configured in `/etc/asound.conf`. Both normal and `sudo aplay` use the USB card.
-- For Jetson GPU, install PyTorch from the [Jetson AI Lab](https://pypi.jetson-ai-lab.io/jp6/cu126/) index, not standard pip. Also install `numpy<2`.
-
-```bash
-.venv/bin/pip uninstall -y torch torchvision torchaudio
-.venv/bin/pip install torch==2.8.0 torchvision==0.23.0 \
-  --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
-.venv/bin/pip install 'numpy<2'
-```
