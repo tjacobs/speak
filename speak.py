@@ -12,6 +12,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
 MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
+os.environ['HF_HUB_VERBOSITY'] = 'error'
 
 # Use local cache only when the model is already downloaded
 if os.path.isdir(MODEL_CACHE_DIR) and os.listdir(MODEL_CACHE_DIR):
@@ -23,10 +24,14 @@ os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
 os.environ['MKL_NUM_THREADS'] = TORCH_THREADS
 os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
 
+# CPU only, skip cuda init on Jetson where driver does not match pip torch
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
 # Ignore warnings
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.modules.rnn')
 warnings.filterwarnings('ignore', category=FutureWarning, module='torch.nn.utils.weight_norm')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
 
 # Imports
 KOKORO_START = time.perf_counter()
@@ -94,15 +99,15 @@ def main():
         generate_and_play(voice, TEXT)
 
         # Print total time
-        log_timing("run total", run_start)
-        log_timing("script total", STARTUP_START)
+        log_timing("Run total", run_start)
+        log_timing("Script total", STARTUP_START)
     finally:
         if saved_governor:
             set_cpu_governor(saved_governor)
 
 # Print kokoro import timing
 def print_import_timing():
-    log_elapsed("import kokoro", KOKORO_SECONDS)
+    log_elapsed("Import kokoro", KOKORO_SECONDS)
 
 # Print elapsed seconds for a stored duration
 def log_elapsed(label, seconds):
@@ -134,11 +139,11 @@ def print_governor_change(saved_governor, governor_set):
     current_governor = get_cpu_governor()
     if governor_set and current_governor == CPU_GOVERNOR:
         if saved_governor == CPU_GOVERNOR:
-            print(f"cpu governor: using {CPU_GOVERNOR}")
+            print(f"CPU governor: using {CPU_GOVERNOR}")
         else:
-            print(f"cpu governor: {saved_governor} -> {CPU_GOVERNOR}")
+            print(f"CPU governor: {saved_governor} -> {CPU_GOVERNOR}")
     else:
-        print(f"cpu governor: {current_governor} (could not set {CPU_GOVERNOR}, need sudo)")
+        print(f"CPU governor: {current_governor} (could not set {CPU_GOVERNOR}, need sudo)")
 
 # Print active speed tweaks
 def print_speed_opts():
@@ -147,7 +152,7 @@ def print_speed_opts():
     if os.path.exists(governor_path):
         with open(governor_path) as governor_file:
             governor = governor_file.read().strip()
-    print(f"opts: disable_complex={DISABLE_COMPLEX}, speech_speed={SPEECH_SPEED}, threads={TORCH_THREADS}, governor={governor}")
+    print(f"Opts: disable_complex={DISABLE_COMPLEX}, speech_speed={SPEECH_SPEED}, threads={TORCH_THREADS}, governor={governor}")
 
 # Generate audio for the text and play each chunk
 def generate_and_play(voice, text):
@@ -155,7 +160,7 @@ def generate_and_play(voice, text):
     pipeline_start = time.perf_counter()
     model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to('cpu').eval()
     pipeline = kokoro.KPipeline(lang_code=voice[0], repo_id=REPO_ID, model=model)
-    log_timing("load pipeline", pipeline_start)
+    log_timing("Load pipeline", pipeline_start)
 
     # Audio player, afplay on mac, aplay on linux
     player = 'afplay' if platform.system() == 'Darwin' else 'aplay'

@@ -1,6 +1,11 @@
 # speak
 
-Text to speech from the command line, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model. Each run picks a random American or British voice, generates the audio, saves it as wav files, and plays it.
+Text to speech from the command line, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
+
+Two tools:
+
+- `speak.py` — speak a fixed phrase once, with timing stats
+- `talk.py` — interactive keyboard control over SSH, with preset phrases, a speech queue, voice and speed control
 
 ## Setup
 
@@ -12,19 +17,77 @@ python3 -m venv .venv
 On Linux, install `espeak-ng` for phonemization and `alsa-utils` for playback:
 
 ```bash
-sudo apt install espeak-ng alsa-utils
+sudo apt install espeak-ng alsa-utils python3-venv
 ```
 
-## Run
+Your user must be in the `audio` group to access the sound card:
+
+```bash
+sudo usermod -aG audio $USER
+# log out and back in, or run: newgrp audio
+```
+
+On first run, the model and all voices download from Hugging Face into `cache/`. After that, `talk.py` works offline.
+
+## speak.py
+
+Speak a single block of text. Edit the `TEXT` constant in `speak.py` to change what is spoken, or set a voice from the `VOICES` list.
 
 ```bash
 ./speak.py
 ```
 
-Edit the `TEXT` constant in `speak.py` to change what is spoken, or set a specific voice from the `VOICES` list.
+Generated audio is written as `0.wav`, `1.wav`, etc, one file per text chunk. Audio plays with `afplay` on macOS and `aplay` on Linux.
+
+## talk.py
+
+Interactive speech tool for controlling a robot over SSH. Phrases queue in the background so you can keep typing while it speaks.
+
+```bash
+./talk.py
+```
+
+Single keypresses work without Enter. Preset phrases are defined in `phrases.json` and triggered by number keys.
+
+### Preset phrases
+
+| Key | Default phrase |
+|-----|----------------|
+| 1 | hi there |
+| 2 | hello there |
+| 3 | wowee! |
+| 4 | beep boop! |
+| 5 | bye for now! |
+| 6 | thank you! |
+| 7 | yes please |
+| 8 | no thanks |
+| 9 | that's what you think! |
+
+Edit `phrases.json` to change these.
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| `t` | Type a custom phrase |
+| `r` | Repeat last custom phrase |
+| `c` | Cancel current speech |
+| `x` | Clear queued speech |
+| `+` / `-` | Speed up / down |
+| `v` | Next voice |
+| `s` | Show status |
+| `h` | Show help |
+| `q` | Quit |
+
+Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
+
+On speech errors, playback stops, the queue is cleared, and a short error message is shown. The worker keeps running so you can continue. Voice changes skip unavailable voices without clearing the queue.
+
+Generated audio files are saved in `talk_audio/`.
 
 ## Notes
 
-- The model and voice files are downloaded from Hugging Face on first use and cached in `cache/` next to the script, so later runs work offline.
-- Audio plays with `afplay` on macOS and `aplay` on Linux.
-- Generated audio is written as `0.wav`, `1.wav`, etc, one file per text chunk.
+- First `talk.py` launch downloads all voices and takes longer. Later launches are faster.
+- If a voice is missing, run once with network access to download it.
+- On Jetson, USB audio is configured in `/etc/asound.conf`. Both normal and `sudo aplay` use the USB card.
+- `speak.py` disables CUDA probing on CPU-only devices to avoid driver warnings on Jetson.
