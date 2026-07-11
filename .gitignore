@@ -1,4 +1,4 @@
 .venv/
-hf_cache/
+cache/
 *.wav
 .DS_Store
