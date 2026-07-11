@@ -14,7 +14,7 @@ import tty
 
 # Cache model downloads next to this script, must be set before importing kokoro
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
+CACHE_DIR = os.path.join(SCRIPT_DIR, 'c')
 MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
 PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
@@ -34,7 +34,7 @@ def load_phrases():
 
 # Print startup banner and key help
 def print_banner(phrases):
-    print("Talk — interactive speech over SSH")
+    print("Say — interactive speech over SSH")
     print("Preset keys:")
     for key in sorted(phrases.keys()):
         print(f"  {key}  {phrases[key]}")
@@ -105,7 +105,7 @@ PLAYER = 'afplay' if platform.system() == 'Darwin' else 'aplay'
 # Lock all terminal output so worker and input threads do not interleave
 OUTPUT_LOCK = threading.Lock()
 
-# Run the interactive talk tool
+# Run the interactive say tool
 def main():
     # Start the speech engine
     engine = SpeechEngine()
@@ -232,7 +232,7 @@ def run_input_loop(engine, phrases):
 def format_error(error):
     text = str(error).strip()
     if 'offline mode is enabled' in text:
-        return 'voice not cached, run talk once online to download voices'
+        return 'voice not cached, run say once online to download voices'
     if 'Cannot reach' in text:
         return 'network unavailable, voice not cached'
     if len(text) > 80:
@@ -281,7 +281,7 @@ class SpeechEngine:
         self.last_realtime_speed = None
         self.model = None
         self.pipeline = None
-        self.audio_counter = 0
+        self.audio_counter = 1
         self.last_custom = ''
         self.available_voices = set()
         self.pipelines = {}

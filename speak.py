@@ -9,7 +9,7 @@ STARTUP_START = time.perf_counter()
 
 # Cache model downloads next to this script, must be set before importing kokoro
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
+CACHE_DIR = os.path.join(SCRIPT_DIR, 'c')
 MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
 os.environ['HF_HUB_VERBOSITY'] = 'error'
@@ -33,7 +33,10 @@ warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.modules
 warnings.filterwarnings('ignore', category=FutureWarning, module='torch.nn.utils.weight_norm')
 warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
 
-# Imports
+# Print before heavy import
+print("Loading...")
+
+# Time kokoro import
 KOKORO_START = time.perf_counter()
 import kokoro
 import torch
@@ -58,6 +61,8 @@ CPU_GOVERNOR = 'performance'
 # Timing format
 SECONDS_DECIMALS = 2
 AUDIO_SAMPLE_RATE = 24000
+AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
+AUDIO_NAME_WIDTH = 3
 CHUNK_COL_WIDTH = 5
 TIMING_COL_WIDTH = 8
 SPEED_COL_WIDTH = 6
@@ -167,6 +172,8 @@ def generate_and_play(voice, text):
 
     # Generate, write, and play each chunk
     print_chunk_timing_header()
+    os.makedirs(AUDIO_DIR, exist_ok=True)
+    audio_counter = 1
     chunk_start = time.perf_counter()
     generator = pipeline(text, voice=voice, speed=SPEECH_SPEED)
     for index, (graphemes, phonemes, audio) in enumerate(generator):
@@ -175,11 +182,14 @@ def generate_and_play(voice, text):
         audio_seconds = len(audio) / AUDIO_SAMPLE_RATE
 
         # Write wav file
-        soundfile.write(f'{index}.wav', audio, AUDIO_SAMPLE_RATE)
+        wav_name = str(audio_counter).zfill(AUDIO_NAME_WIDTH) + '.wav'
+        audio_counter += 1
+        wav_path = os.path.join(AUDIO_DIR, wav_name)
+        soundfile.write(wav_path, audio, AUDIO_SAMPLE_RATE)
 
         # Play wav file
         play_start = time.perf_counter()
-        subprocess.run([player, f'{index}.wav'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([player, wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         play_seconds = time.perf_counter() - play_start
         log_chunk_timing(index, generate_seconds, play_seconds, audio_seconds)
 

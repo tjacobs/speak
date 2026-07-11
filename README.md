@@ -5,11 +5,11 @@ Offline text to speech generation, using the [Kokoro-82M](https://huggingface.co
 Two tools:
 
 - `speak.py` — speak a fixed phrase once, with timing stats
-- `talk.py` — interactive keyboard control over SSH, with preset phrases, voice and speed control
+- `say.py` — interactive keyboard control over SSH, with preset phrases, voice and speed control
 
 ## Setup
 
-On first run, the model and all voices download into `cache/`.
+On first run, the model and all voices download into `c/`.
 
 ## speak.py
 
@@ -19,14 +19,14 @@ Speak a single block of text. Edit the `TEXT` constant in `speak.py` to change w
 ./speak.py
 ```
 
-Generated audio is written as `0.wav`, `1.wav`, etc, one file per text chunk.
+Generated audio files are saved in `audio/` as `001.wav`, `002.wav`, etc.
 
-## talk.py
+## say.py
 
 Interactive speech tool for controlling a robot over SSH. Phrases queue in the background.
 
 ```bash
-./talk.py
+./say.py
 ```
 
 Single keypresses work without Enter. Preset phrases are in `phrases.json`, triggered by keys `1`–`9`.
@@ -50,7 +50,7 @@ Generated audio files are saved in `audio/`.
 
 ## Notes
 
-- First `talk.py` launch downloads all voices and takes longer. Later launches are faster.
+- First `say.py` launch downloads all voices and takes longer. Later launches are faster.
 - If a voice is missing, run once with network access to download it.
 - On Jetson, USB audio is configured in `/etc/asound.conf`. Both normal and `sudo aplay` use the USB card.
 - `speak.py` disables CUDA probing on CPU-only devices to avoid driver warnings on Jetson.

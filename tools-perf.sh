@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Check or set cpu governor.
-# Usage: ./perf.sh
+# Usage: ./tools-perf.sh
 
 echo "Current:"
 cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor

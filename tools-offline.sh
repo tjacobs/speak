@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Block or restore internet access for offline testing.
-# Usage: ./offline.sh
-#        ./offline.sh --fix
+# Usage: ./tools-offline.sh
+#        ./tools-offline.sh --fix
 
 # Exit on error, undefined variables, and pipe failure
 set -euo pipefail
@@ -43,7 +43,7 @@ parse_args() {
             FIX_MODE="true"
         else
             echo "Unknown argument: ${argument}"
-            echo "Usage: ./offline.sh [--fix]"
+            echo "Usage: ./tools-offline.sh [--fix]"
             exit 1
         fi
     done
@@ -61,9 +61,6 @@ go_offline() {
 
     # Allow loopback
     nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" oif "lo" accept
-
-    # Allow replies for existing connections, including SSH
-    nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" ct state established,related accept
 
     # Allow traffic to the current SSH client
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -86,8 +83,7 @@ go_offline() {
     nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" ip6 daddr fc00::/7 accept
     nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" ip6 daddr fe80::/10 accept
 
-    # Drop new outbound internet traffic
-    nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" ct state new drop
+    # Drop all other outbound traffic
     nft add rule inet "${TABLE_NAME}" "${CHAIN_NAME}" drop
 
     # Mark offline mode active
@@ -126,7 +122,7 @@ verify_offline() {
         echo "Warning: local host ${LOCAL_TEST_HOST} is not reachable."
     fi
 
-    echo "Offline mode active. Run ./offline.sh --fix to restore internet."
+    echo "Offline mode active. Run ./tools-offline.sh --fix to restore internet."
 }
 
 # Confirm public internet works again
