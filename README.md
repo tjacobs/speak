@@ -23,7 +23,7 @@ Generated audio files are saved in `audio/` as `001.wav`, `002.wav`, etc.
 
 ## say.py
 
-Interactive speech tool for controlling a robot over SSH. Phrases queue in the background.
+Interactive speech tool. Press keys to speak phrases.
 
 ```bash
 ./say.py
