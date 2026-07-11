@@ -9,7 +9,7 @@ Two tools:
 
 ## Setup
 
-On first run, the model and all voices download from Hugging Face into `cache/`.
+On first run, the model and all voices download into `cache/`.
 
 ## speak.py
 
