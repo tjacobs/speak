@@ -1,79 +1,113 @@
 #!.venv/bin/python
 
+# Imports
 import glob
 import os
 import shutil
+import signal
 import subprocess
 import sys
 
+# Config
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SPEAK = os.path.join(SCRIPT_DIR, 'speak.py')
 SAY = os.path.join(SCRIPT_DIR, 'say.py')
 OFFLINE_TOOL = os.path.join(SCRIPT_DIR, 'tools-offline.sh')
 CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
-ONLINE_TIMEOUT_SECONDS = 600
-OFFLINE_TIMEOUT_SECONDS = 180
+ONLINE_TIMEOUT_SECONDS = 30
+OFFLINE_TIMEOUT_SECONDS = 30
 MIN_WAV_COUNT = 1
+GREEN = '\033[92m'
+RED = '\033[91m'
+RESET = '\033[0m'
+INTERNET_BLOCKED = False
+STEP_NAME_WIDTH = 19
 
 def main():
-    parse_args()
-    clean_dirs()
+    # Parse args and optionally clear cache and audio dirs
+    fresh = parse_args()
+    signal.signal(signal.SIGINT, handle_interrupt)
+    if fresh:
+        clean_dirs()
+
+    # Track failures across all steps
     failed = False
-    failed |= not run_check('online network', check_online)
-    if failed:
-        print_fail('online network')
+
+    # Print
+    print("Testing...")
+
+    # Require internet for first-run downloads
+    if not check_online():
+        print('Need internet for first-run cache download.')
         sys.exit(1)
-    online_needles = online_device_needles()
-    failed |= not run_step('online speak.py', lambda: run_speak([], *online_needles))
-    failed |= not run_step('online say.py --test', lambda: run_say(['--test'], *online_needles))
-    failed |= not run_step('cpu speak.py --cpu', lambda: run_speak(['--cpu'], 'Device: cpu', 'GPU: disabled'))
-    failed |= not run_step('cpu say.py --test --cpu', lambda: run_say(['--test', '--cpu'], 'Device: cpu', 'GPU: disabled'))
+
+    # Run online cuda tests when cuda is available
+    failed |= not run_step('Online speak.py', lambda: run_speak([], *device()))
+    failed |= not run_step('Online say.py', lambda: run_say(['--test'], *device()))
+
+    # Run cpu mode tests
+    failed |= not run_step('CPU speak.py --cpu', lambda: run_speak(['--cpu'], 'Device: cpu', 'GPU: disabled'))
+    failed |= not run_step('CPU say.py --cpu', lambda: run_say(['--test', '--cpu'], 'Device: cpu', 'GPU: disabled'))
+
+    # Run offline tests
     blocked = try_block_internet()
-    if blocked:
-        failed |= not run_step('offline speak.py', lambda: run_speak([], timeout=OFFLINE_TIMEOUT_SECONDS))
-        failed |= not run_step('offline say.py --test', lambda: run_say(['--test'], timeout=OFFLINE_TIMEOUT_SECONDS))
-        try_restore_internet()
-    else:
-        print_skip('firewall offline tests, using HF_HUB_OFFLINE instead')
-        failed |= not run_step('offline speak.py', lambda: run_speak([], env=offline_env(), timeout=OFFLINE_TIMEOUT_SECONDS))
-        failed |= not run_step('offline say.py --test', lambda: run_say(['--test'], env=offline_env(), timeout=OFFLINE_TIMEOUT_SECONDS))
+    try:
+        if blocked:
+            failed |= not run_step('Offline speak.py', lambda: run_speak([], timeout=OFFLINE_TIMEOUT_SECONDS))
+            failed |= not run_step('Offline say.py', lambda: run_say(['--test'], timeout=OFFLINE_TIMEOUT_SECONDS))
+        else:
+            print_skip('Firewall offline tests, using HF_HUB_OFFLINE instead')
+            failed |= not run_step('Offline speak.py', lambda: run_speak([], env=offline_env(), timeout=OFFLINE_TIMEOUT_SECONDS))
+            failed |= not run_step('Offline say.py', lambda: run_say(['--test'], env=offline_env(), timeout=OFFLINE_TIMEOUT_SECONDS))
+    finally:
+        restore_internet_if_blocked()
+
+    # Exit with pass or fail
     if failed:
-        print_fail('one or more tests')
+        print_fail('One or more tests')
         sys.exit(1)
-    print_pass('all tests')
+    print_pass('All tests')
 
 # Parse command line arguments
 def parse_args():
+    fresh = False
     for argument in sys.argv[1:]:
-        print(f"Unknown argument: {argument}")
-        sys.exit(1)
+        if argument == '--fresh':
+            fresh = True
+        else:
+            print(f"Unknown argument: {argument}")
+            sys.exit(1)
+    return fresh
 
 # Remove cache and audio dirs for a fresh run
 def clean_dirs():
     shutil.rmtree(CACHE_DIR, ignore_errors=True)
     shutil.rmtree(AUDIO_DIR, ignore_errors=True)
 
-# Run one named check
-def run_check(name, function):
-    print(f"== {name} ==")
-    return function()
-
 # Run one named test step
 def run_step(name, function):
-    print(f"== {name} ==")
-    return function()
+    print(f"== {name:<{STEP_NAME_WIDTH}} == ", end='', flush=True)
+    result = function()
+    if isinstance(result, tuple):
+        passed, detail = result
+    else:
+        passed, detail = result, None
+    if passed:
+        print(f'{GREEN}PASS{RESET}')
+    else:
+        print(f'{RED}FAIL{RESET}')
+        if detail:
+            print(detail, end='' if detail.endswith('\n') else '\n')
+    return passed
 
 # Return true when public internet responds to ping
 def check_online():
     result = subprocess.run(['ping', '-c', '1', '-W', '2', '1.1.1.1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if result.returncode != 0:
-        print('Need internet for first-run cache download.')
-        return False
-    return True
+    return result.returncode == 0
 
-# Return output needles for default online cuda runs
-def online_device_needles():
+# Return expected output for default online device
+def device():
     if cuda_available():
         return ('Device: cuda',)
     return ()
@@ -84,32 +118,39 @@ def cuda_available():
     return result.stdout.strip() == 'True'
 
 # Run speak.py with args and check output
-def run_speak(args, *needles, env=None, timeout=ONLINE_TIMEOUT_SECONDS):
-    return run_script(SPEAK, args, needles, env, timeout)
+def run_speak(args, *expects, env=None, timeout=ONLINE_TIMEOUT_SECONDS):
+    return run_script(SPEAK, args, expects, env, timeout)
 
 # Run say.py with args and check output
-def run_say(args, *needles, env=None, timeout=ONLINE_TIMEOUT_SECONDS):
-    return run_script(SAY, args, needles, env, timeout)
+def run_say(args, *expects, env=None, timeout=ONLINE_TIMEOUT_SECONDS):
+    return run_script(SAY, args, expects, env, timeout)
 
 # Run a script and verify output and audio files
-def run_script(script, args, needles, env, timeout):
+def run_script(script, args, expects, env, timeout):
+    # Build env for subprocess
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
-    result = subprocess.run([script] + args, capture_output=True, text=True, cwd=SCRIPT_DIR, env=run_env, timeout=timeout)
+
+    # Run script and capture output
+    try:
+        result = subprocess.run([script] + args, capture_output=True, text=True, cwd=SCRIPT_DIR, env=run_env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"Timed out after {timeout} seconds."
+
     output = result.stdout + result.stderr
     if result.returncode != 0:
-        print(output)
-        return False
-    for needle in needles:
-        if needle not in output:
-            print(f"Missing in output: {needle}")
-            print(output)
-            return False
+        return False, output
+
+    # Check expected output strings
+    for expected in expects:
+        if expected not in output:
+            return False, f"Missing in output: {expected}\n{output}"
+
+    # Check wav files were written
     if len(glob.glob(os.path.join(AUDIO_DIR, '*.wav'))) < MIN_WAV_COUNT:
-        print(f"Missing wav files in {AUDIO_DIR}")
-        return False
-    return True
+        return False, f"Missing wav files in {AUDIO_DIR}"
+    return True, None
 
 # Return env dict for huggingface offline mode
 def offline_env():
@@ -117,20 +158,35 @@ def offline_env():
 
 # Block internet with tools-offline.sh when sudo works
 def try_block_internet():
+    global INTERNET_BLOCKED
     result = subprocess.run([OFFLINE_TOOL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-    return result.returncode == 0
+    INTERNET_BLOCKED = result.returncode == 0
+    return INTERNET_BLOCKED
 
 # Restore internet after tools-offline.sh
 def try_restore_internet():
     subprocess.run([OFFLINE_TOOL, '--fix'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
+# Restore internet when firewall block is active
+def restore_internet_if_blocked():
+    global INTERNET_BLOCKED
+    if not INTERNET_BLOCKED:
+        return
+    try_restore_internet()
+    INTERNET_BLOCKED = False
+
+# Restore internet on ctrl-c
+def handle_interrupt(signum, frame):
+    restore_internet_if_blocked()
+    raise KeyboardInterrupt
+
 # Print pass line
 def print_pass(message):
-    print(f"PASS: {message}")
+    print(f"{GREEN}PASS{RESET}: {message}")
 
 # Print fail line
 def print_fail(message):
-    print(f"FAIL: {message}")
+    print(f"{RED}FAIL{RESET}: {message}")
 
 # Print skip line
 def print_skip(message):
