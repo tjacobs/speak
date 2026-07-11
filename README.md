@@ -49,6 +49,16 @@ Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
 
 Generated audio files are saved in `audio/`.
 
+Pass `--test` to speak the first two preset phrases and exit.
+
+## Testing
+
+```bash
+./test.py
+```
+
+Clears `cache/` and `audio/`, then runs `speak.py` and `say.py --test` online, with `--cpu`, and offline. Requires internet for the first run.
+
 ## Tools
 
 - `tools-offline.sh` — block internet for offline testing, `./tools-offline.sh --fix` to restore
