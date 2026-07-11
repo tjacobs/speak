@@ -1,27 +1,26 @@
 #!.venv/bin/python
 
-# Imports needed before cache setup
-import os
-import sys
-import time
+# Imports
+import glob
 import json
-import threading
-import subprocess
+import os
 import platform
 import queue
+import shutil
+import subprocess
+import sys
 import termios
+import threading
+import time
 import tty
-import glob
+import warnings
 
-# Cache model downloads next to this script, must be set before importing kokoro
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
-MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
-PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
-os.environ['HF_HUB_CACHE'] = CACHE_DIR
-os.environ['HF_HUB_VERBOSITY'] = 'error'
-
-# All voices for manual cycling
+# Config voice
+REPO_ID = 'hexgrad/Kokoro-82M'
+DEFAULT_SPEED = 1.5
+SPEED_STEP = 0.1
+SPEED_MIN = 0.5
+SPEED_MAX = 2.0
 VOICES = [
     'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica', 'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
     'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa',
@@ -29,39 +28,70 @@ VOICES = [
     'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
 ]
 
-# Return path to a cached voice file when present
-def voice_cache_path(voice):
-    if not os.path.isdir(MODEL_CACHE_DIR):
-        return None
-    for snapshot_name in os.listdir(MODEL_CACHE_DIR):
-        voice_path = os.path.join(MODEL_CACHE_DIR, snapshot_name, 'voices', voice + '.pt')
-        if os.path.isfile(voice_path):
-            return voice_path
-    return None
+# Config dirs and env
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
+MODEL_CACHE_DIR = os.path.join(CACHE_DIR, 'models--hexgrad--Kokoro-82M', 'snapshots')
+PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
+AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
+os.environ['HF_HUB_CACHE'] = CACHE_DIR
+os.environ['HF_HUB_VERBOSITY'] = 'error'
 
-# Return true when every voice file is cached locally
-def all_voices_cached():
-    for voice in VOICES:
-        if voice_cache_path(voice) is None:
-            return False
-    return True
+# Config timeouts
+LOAD_TIMEOUT_SECONDS = 20
+TEST_WAIT_SECONDS = 300
 
-# Allow huggingface downloads when voices are missing from cache
-def enable_online_for_downloads():
-    os.environ.pop('HF_HUB_OFFLINE', None)
+# Config status display
+STATUS_STATE_WIDTH = 8
+STATUS_QUEUE_WIDTH = 2
+STATUS_VOICE_WIDTH = 11
+STATUS_SPEED_WIDTH = 4
+STATUS_REALTIME_WIDTH = 5
+PLAYER = 'afplay' if platform.system() == 'Darwin' else 'aplay'
 
-# Use local cache only when all voices are already downloaded
-def enable_offline_if_cached():
-    if all_voices_cached():
-        os.environ['HF_HUB_OFFLINE'] = '1'
+# Config stats and device
+KOKORO_SECONDS = 0
+DEVICE = 'cpu'
+FORCE_CPU = False
+TEST_MODE = False
+OUTPUT_LOCK = threading.Lock()
 
-enable_offline_if_cached()
+# Main
+def main():
+    # Check offline cache
+    #check_offline_cache()
 
-# Limit torch thread pools before kokoro imports torch
-TORCH_THREADS = '4'
-os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
-os.environ['MKL_NUM_THREADS'] = TORCH_THREADS
-os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
+    # Load kokoro
+    init()
+
+    # Set CPU mode to performance, restore when done
+    saved_cpu_mode = get_cpu_mode()
+    perf_set = set_cpu_mode('performance')
+    print_system_info(perf_set)
+
+    # Quit early when audio playback is unavailable
+    check_ready()
+
+    # Start the speech engine
+    engine = SpeechEngine()
+    engine.start()
+    if engine.load_failed:
+        sys.exit(1)
+
+    # Run
+    try:
+        # Run test phrases or handle keyboard input until quit
+        phrases = load_phrases()
+        if TEST_MODE:
+            run_test_loop(engine, phrases)
+        else:
+            run_input_loop(engine, phrases)
+
+    # Done
+    finally:
+        engine.stop()
+        if saved_cpu_mode:
+            set_cpu_mode(saved_cpu_mode)
 
 # Parse command line arguments
 def parse_args():
@@ -77,205 +107,48 @@ def parse_args():
             sys.exit(1)
     return force_cpu, test_mode
 
-FORCE_CPU, TEST_MODE = parse_args()
-if FORCE_CPU:
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+# Import kokoro and configure runtime
+def init():
+    global FORCE_CPU, TEST_MODE, KOKORO_SECONDS, DEVICE
 
-# Load preset phrases from json file
-def load_phrases():
-    with open(PHRASES_PATH) as phrases_file:
-        return json.load(phrases_file)
-
-# Print startup banner and key help
-def print_banner(phrases):
-    print("Say — interactive speech over SSH")
-    print("Preset keys:")
-    for key in sorted(phrases.keys()):
-        print(f"  {key}  {phrases[key]}")
-    print("Controls:")
-    print("  t  type a custom phrase")
-    print("  r  repeat last custom phrase")
-    print("  c  cancel current speech")
-    print("  x  clear queued speech")
-    print("  +  faster")
-    print("  -  slower")
-    print("  v  next voice")
-    print("  h  show help")
-    print("  q  quit")
-    print()
-
-# Print banner before heavy imports
-if not TEST_MODE:
-    print_banner(load_phrases())
-IMPORT_START = time.perf_counter()
-
-# Ignore warnings
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.modules.rnn')
-warnings.filterwarnings('ignore', category=FutureWarning, module='torch.nn.utils.weight_norm')
-warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
-
-# Imports
-import kokoro
-import torch
-import soundfile
-
-IMPORT_SECONDS = time.perf_counter() - IMPORT_START
-print(f"Import kokoro: {IMPORT_SECONDS:.1f}s")
-
-torch.set_num_threads(int(TORCH_THREADS))
-
-# Pick cuda when available, else cpu
-def pick_device():
+    # Parse args and configure device flags
+    FORCE_CPU, TEST_MODE = parse_args()
     if FORCE_CPU:
-        return 'cpu'
-    if torch.cuda.is_available():
-        return 'cuda'
-    return 'cpu'
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
-DEVICE = pick_device()
+    # Enable offline mode when cached
+    enable_offline_if_cached()
 
-CPU_PERF_MODE = 'performance'
-CPU_SCALING_FILE = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+    # Limit torch thread pools before kokoro imports torch
+    os.environ['OMP_NUM_THREADS'] = '4'
+    os.environ['MKL_NUM_THREADS'] = '4'
+    os.environ['OPENBLAS_NUM_THREADS'] = '4'
 
-# Read cpu scaling mode for the first core
-def get_cpu_mode():
-    if not os.path.exists(CPU_SCALING_FILE):
-        return None
-    with open(CPU_SCALING_FILE) as scaling_file:
-        return scaling_file.read().strip()
+    # Print banner before heavy imports
+    if not TEST_MODE:
+        print_banner(load_phrases())
 
-# Set cpu scaling mode for all cores, return true on success
-def set_cpu_mode(mode):
-    for cpu_index in range(64):
-        scaling_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
-        if not os.path.exists(scaling_path):
-            break
-        try:
-            with open(scaling_path, 'w') as scaling_file:
-                scaling_file.write(mode)
-        except OSError:
-            return False
-    return True
+    # Suppress warnings
+    warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.modules.rnn')
+    warnings.filterwarnings('ignore', category=FutureWarning, module='torch.nn.utils.weight_norm')
+    warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
 
-# Read jetson gpu clock in mhz from sysfs
-def read_gpu_frequency_mhz():
-    frequency_paths = glob.glob('/sys/class/devfreq/*gpu*/cur_freq')
-    if not frequency_paths:
-        return None
-    with open(frequency_paths[0]) as frequency_file:
-        hertz = int(frequency_file.read().strip())
-    return hertz / 1_000_000
+    # Import kokoro and pick device
+    kokoro_start = time.perf_counter()
+    global kokoro, torch, soundfile
+    import kokoro
+    import torch
+    import soundfile
+    KOKORO_SECONDS = time.perf_counter() - kokoro_start
+    DEVICE = pick_device()
+    torch.set_num_threads(4)
+    print_import_timing()
 
-# Print cpu, gpu, and device info
-def print_system_info(perf_set):
-    current_cpu_mode = get_cpu_mode() or 'unknown'
-    if perf_set and current_cpu_mode == CPU_PERF_MODE:
-        print(f"CPU: {current_cpu_mode}")
-    else:
-        print(f"CPU: {current_cpu_mode} (run with sudo to change)")
-    if DEVICE == 'cuda':
-        properties = torch.cuda.get_device_properties(0)
-        frequency = read_gpu_frequency_mhz()
-        clock_text = f"{frequency / 1000:.1f}GHz" if frequency else "unknown"
-        memory_gigabytes = properties.total_memory / 1024 / 1024 / 1024
-        print(f"GPU: {properties.name}, {memory_gigabytes:.1f}GB memory, clock {clock_text}")
-    elif FORCE_CPU:
-        print("GPU: disabled")
-    else:
-        print("GPU: not available")
-    print(f"Device: {DEVICE}")
-
-# Model repo
-REPO_ID = 'hexgrad/Kokoro-82M'
-
-# Speech defaults
-DISABLE_COMPLEX = True
-DEFAULT_SPEED = 1.5
-SPEED_STEP = 0.1
-SPEED_MIN = 0.5
-SPEED_MAX = 2.0
-AUDIO_SAMPLE_RATE = 24000
-REALTIME_DECIMALS = 1
-TIMING_DECIMALS = 1
-AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
-AUDIO_NAME_WIDTH = 3
-TEST_WAIT_SECONDS = 300
-
-# Status column widths for aligned output
-STATUS_STATE_WIDTH = 8
-STATUS_QUEUE_WIDTH = 2
-STATUS_VOICE_WIDTH = 11
-STATUS_SPEED_WIDTH = 4
-STATUS_REALTIME_WIDTH = 5
-
-# Audio player command
-PLAYER = 'afplay' if platform.system() == 'Darwin' else 'aplay'
-
-# Lock all terminal output so worker and input threads do not interleave
-OUTPUT_LOCK = threading.Lock()
-
-# Run the interactive say tool
-def main():
-    # Set cpu perf mode to performance, restore when done
-    saved_cpu_mode = get_cpu_mode()
-    perf_set = set_cpu_mode(CPU_PERF_MODE)
-    print_system_info(perf_set)
-
-    # Start the speech engine
-    engine = SpeechEngine()
-    engine.start()
-    if engine.load_failed:
-        return
-
-    try:
-        # Run test phrases or handle keyboard input until quit
-        if TEST_MODE:
-            run_test_loop(engine, load_phrases())
-        else:
-            run_input_loop(engine, load_phrases())
-    finally:
-        engine.stop()
-        if saved_cpu_mode:
-            set_cpu_mode(saved_cpu_mode)
-
-# Update status in place on one line
-def write_status(text):
-    with OUTPUT_LOCK:
-        sys.stdout.write('\r\033[K' + text)
-        sys.stdout.flush()
-
-# Write a scrolling line to the terminal
-def write_line(text):
-    with OUTPUT_LOCK:
-        sys.stdout.write('\r\033[K' + text + '\n')
-        sys.stdout.flush()
-
-# Read single keypress without waiting for enter
-def read_key():
-    if not sys.stdin.isatty():
-        line = sys.stdin.readline()
-        if not line:
-            return 'q'
-        return line.strip()[0]
-
-    file_descriptor = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(file_descriptor)
-    try:
-        tty.setraw(file_descriptor)
-        key = sys.stdin.read(1)
-        if key == '\x1b':
-            key += sys.stdin.read(2)
-    finally:
-        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_settings)
-    return key
-
-# Read a full line for custom phrases
-def read_line(prompt):
-    with OUTPUT_LOCK:
-        sys.stdout.write('\n' + prompt)
-        sys.stdout.flush()
-    return input()
+# Quit when audio playback is unavailable
+def check_ready():
+    player_ok, player_error = check_audio_player()
+    if not player_ok:
+        exit_error(f'Audio playback unavailable: {player_error}')
 
 # Queue two preset phrases and wait for speech to finish
 def run_test_loop(engine, phrases):
@@ -284,16 +157,6 @@ def run_test_loop(engine, phrases):
         engine.enqueue(phrases[key])
     wait_until_idle(engine)
     write_line("Test done.")
-
-# Wait until engine is idle with an empty queue
-def wait_until_idle(engine):
-    deadline = time.time() + TEST_WAIT_SECONDS
-    while time.time() < deadline:
-        if engine.state == 'idle' and engine.queue_size() == 0 and engine.player_process is None:
-            return
-        time.sleep(0.1)
-    write_line("Test timed out.")
-    sys.exit(1)
 
 # Handle keyboard commands
 def run_input_loop(engine, phrases):
@@ -368,6 +231,135 @@ def run_input_loop(engine, phrases):
         if key not in ('\r', '\n'):
             print_status(engine, f"Unknown key: {repr(key)}")
 
+# Wait until engine is idle with an empty queue
+def wait_until_idle(engine):
+    deadline = time.time() + TEST_WAIT_SECONDS
+    while time.time() < deadline:
+        if engine.state == 'idle' and engine.queue_size() == 0 and engine.player_process is None:
+            return
+        time.sleep(0.1)
+    write_line("Test timed out.")
+    sys.exit(1)
+
+# Print startup banner and key help
+def print_banner(phrases):
+    print("Say — interactive speech over SSH")
+    print("Preset keys:")
+    for key in sorted(phrases.keys()):
+        print(f"  {key}  {phrases[key]}")
+    print("Controls:")
+    print("  t  type a custom phrase")
+    print("  r  repeat last custom phrase")
+    print("  c  cancel current speech")
+    print("  x  clear queued speech")
+    print("  +  faster")
+    print("  -  slower")
+    print("  v  next voice")
+    print("  h  show help")
+    print("  q  quit")
+    print()
+
+# Print cpu, gpu, and device info
+def print_system_info(perf_set):
+    current_cpu_mode = get_cpu_mode() or 'unknown'
+    if perf_set and current_cpu_mode == 'performance':
+        print(f"CPU: {current_cpu_mode}")
+    else:
+        print(f"CPU: {current_cpu_mode} (run with sudo to change)")
+    if DEVICE == 'cuda':
+        properties = torch.cuda.get_device_properties(0)
+        frequency = read_gpu_frequency_mhz()
+        clock_text = f"{frequency / 1000:.1f}GHz" if frequency else "unknown"
+        memory_gigabytes = properties.total_memory / 1024 / 1024 / 1024
+        print(f"GPU: {properties.name}, {memory_gigabytes:.1f}GB memory, clock {clock_text}")
+    elif FORCE_CPU:
+        print("GPU: disabled")
+    else:
+        print("GPU: not available")
+    print(f"Device: {DEVICE}")
+
+# Print kokoro import timing
+def print_import_timing():
+    print(f"Import kokoro: {KOKORO_SECONDS:.1f}s")
+
+# Print a status line
+def print_status(engine, message):
+    write_status(format_status(engine, None, message))
+
+# Format aligned status prefix
+def format_status(engine, state, message):
+    state_label = state if state is not None else engine.state_label()
+    if engine.last_realtime_speed is None:
+        realtime = f"{'--':>{STATUS_REALTIME_WIDTH}}"
+    else:
+        realtime = f"{format_realtime(engine.last_realtime_speed):>{STATUS_REALTIME_WIDTH}}"
+    prefix = (
+        f"[{state_label:<{STATUS_STATE_WIDTH}} | queue {engine.queue_size():>{STATUS_QUEUE_WIDTH}} | "
+        f"{engine.voice:<{STATUS_VOICE_WIDTH}} | "
+        f"{engine.speed:>{STATUS_SPEED_WIDTH}.1f}x | {realtime}]"
+    )
+    if message:
+        return f"{prefix} {message}"
+    return prefix
+
+# Read single keypress without waiting for enter
+def read_key():
+    if not sys.stdin.isatty():
+        line = sys.stdin.readline()
+        if not line:
+            return 'q'
+        return line.strip()[0]
+
+    file_descriptor = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(file_descriptor)
+    try:
+        tty.setraw(file_descriptor)
+        key = sys.stdin.read(1)
+        if key == '\x1b':
+            key += sys.stdin.read(2)
+    finally:
+        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_settings)
+    return key
+
+# Read a full line for custom phrases
+def read_line(prompt):
+    with OUTPUT_LOCK:
+        sys.stdout.write('\n' + prompt)
+        sys.stdout.flush()
+    return input()
+
+# Update status in place on one line
+def write_status(text):
+    with OUTPUT_LOCK:
+        sys.stdout.write('\r\033[K' + text)
+        sys.stdout.flush()
+
+# Write a scrolling line to the terminal
+def write_line(text):
+    with OUTPUT_LOCK:
+        sys.stdout.write('\r\033[K' + text + '\n')
+        sys.stdout.flush()
+
+# Load preset phrases from json file
+def load_phrases():
+    with open(PHRASES_PATH) as phrases_file:
+        return json.load(phrases_file)
+
+# Return true when audio player is available
+def check_audio_player():
+    if shutil.which(PLAYER) is None:
+        return False, f'{PLAYER} not found'
+    if PLAYER == 'aplay':
+        result = subprocess.run(['aplay', '-l'], capture_output=True)
+        if result.returncode != 0:
+            return False, 'no audio device found'
+    return True, None
+
+# Print error and exit
+def exit_error(message):
+    print(message)
+    sys.exit(1)
+
 # Format exception text for status lines
 def format_error(error):
     text = str(error).strip()
@@ -383,27 +375,45 @@ def format_error(error):
 
 # Format realtime generation speed for status output
 def format_realtime(speed):
-    return f"{speed:.{REALTIME_DECIMALS}f}x"
+    return f"{speed:.1f}x"
 
-# Format aligned status prefix
-def format_status(engine, state=None, message=''):
-    state = state or engine.state_label()
-    if engine.last_realtime_speed is None:
-        realtime = f"{'--':>{STATUS_REALTIME_WIDTH}}"
-    else:
-        realtime = f"{format_realtime(engine.last_realtime_speed):>{STATUS_REALTIME_WIDTH}}"
-    prefix = (
-        f"[{state:<{STATUS_STATE_WIDTH}} | queue {engine.queue_size():>{STATUS_QUEUE_WIDTH}} | "
-        f"{engine.voice:<{STATUS_VOICE_WIDTH}} | "
-        f"{engine.speed:>{STATUS_SPEED_WIDTH}.1f}x | {realtime}]"
-    )
-    if message:
-        return f"{prefix} {message}"
-    return prefix
+# Read cpu scaling mode for the first core
+def get_cpu_mode():
+    scaling_file_path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+    if not os.path.exists(scaling_file_path):
+        return None
+    with open(scaling_file_path) as scaling_file:
+        return scaling_file.read().strip()
 
-# Print a status line
-def print_status(engine, message):
-    write_status(format_status(engine, message=message))
+# Set cpu scaling mode for all cores, return true on success
+def set_cpu_mode(mode):
+    for cpu_index in range(64):
+        scaling_path = f'/sys/devices/system/cpu/cpu{cpu_index}/cpufreq/scaling_governor'
+        if not os.path.exists(scaling_path):
+            break
+        try:
+            with open(scaling_path, 'w') as scaling_file:
+                scaling_file.write(mode)
+        except OSError:
+            return False
+    return True
+
+# Read jetson gpu clock in mhz from sysfs
+def read_gpu_frequency_mhz():
+    frequency_paths = glob.glob('/sys/class/devfreq/*gpu*/cur_freq')
+    if not frequency_paths:
+        return None
+    with open(frequency_paths[0]) as frequency_file:
+        hertz = int(frequency_file.read().strip())
+    return hertz / 1_000_000
+
+# Pick cuda when available, else cpu
+def pick_device():
+    if FORCE_CPU:
+        return 'cpu'
+    if torch.cuda.is_available():
+        return 'cuda'
+    return 'cpu'
 
 # Background speech engine with queue and playback control
 class SpeechEngine:
@@ -449,10 +459,17 @@ class SpeechEngine:
         load_start = time.perf_counter()
         self.queue.put(('__load__', None, None, None))
         while self.model is None and self.running and not self.load_failed:
+            if time.perf_counter() - load_start > LOAD_TIMEOUT_SECONDS:
+                self.load_failed = True
+                self.running = False
+                print(f'\nLoad timed out after {LOAD_TIMEOUT_SECONDS} seconds.')
+                return
             time.sleep(0.1)
+        if self.load_failed:
+            return
         if self.model is not None:
             load_seconds = time.perf_counter() - load_start
-            print(f"Load model: {load_seconds:.{TIMING_DECIMALS}f}s")
+            print(f"Load model: {load_seconds:.1f}s")
             print_status(self, "Ready.")
 
     # Stop worker and cancel playback
@@ -481,7 +498,7 @@ class SpeechEngine:
         return was_busy
 
     # Stop speech, clear queue, and report error
-    def handle_error(self, error, context='', clear_queue=True):
+    def handle_error(self, error, context, clear_queue):
         self.cancel_flag.set()
         self.stop_player()
         self.state = 'idle'
@@ -490,11 +507,11 @@ class SpeechEngine:
             cleared = self.clear_queue()
         detail = format_error(error)
         if context:
-            write_line(format_status(self, state='error', message=f"{context}: {detail}"))
+            write_line(format_status(self, 'error', f"{context}: {detail}"))
         else:
-            write_line(format_status(self, state='error', message=detail))
+            write_line(format_status(self, 'error', detail))
         if clear_queue and cleared:
-            write_status(format_status(self, message='Queue cleared after error.'))
+            write_status(format_status(self, None, 'Queue cleared after error.'))
 
     # Remove all queued phrases, return count removed
     def clear_queue(self):
@@ -527,7 +544,7 @@ class SpeechEngine:
                     self.voice_index = index
                     self.voice = voice
                 return True
-        write_line(format_status(self, state='error', message='Voice change failed: no voices available.'))
+        write_line(format_status(self, 'error', 'Voice change failed: no voices available.'))
         return False
 
     # Get pipeline for a language code
@@ -550,12 +567,8 @@ class SpeechEngine:
             self.available_voices.add(voice)
             return True
         except Exception as error:
-            write_line(format_status(self, state='error', message=f"Voice {voice} unavailable: {format_error(error)}"))
+            write_line(format_status(self, 'error', f"Voice {voice} unavailable: {format_error(error)}"))
             return False
-
-    # Load voice weights if needed, return false when unavailable
-    def ensure_voice(self, voice):
-        return self.try_load_voice(voice)
 
     # Return queue size excluding control messages
     def queue_size(self):
@@ -583,20 +596,20 @@ class SpeechEngine:
                     self.load_model()
                     continue
 
-                # Skip stale queue entries older than 60 seconds
+                # Skip stale queue entries
                 if queued_at and time.time() - queued_at > 60:
                     continue
 
                 # Speak the phrase
                 self.speak_phrase(text, voice, speed)
             except Exception as error:
-                self.handle_error(error, context='Worker error')
+                self.handle_error(error, 'Worker error', True)
 
     # Load kokoro model once
     def load_model(self):
         try:
             self.state = 'loading'
-            self.model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to(DEVICE).eval()
+            self.model = kokoro.KModel(repo_id=REPO_ID, disable_complex=True).to(DEVICE).eval()
             lang_code = self.voice[0]
             self.pipeline = self.get_pipeline(lang_code)
             self.preload_voices()
@@ -605,7 +618,8 @@ class SpeechEngine:
             self.model = None
             self.pipeline = None
             self.load_failed = True
-            self.handle_error(error, context='Model load failed')
+            self.running = False
+            print(f'\nModel load failed: {format_error(error)}')
 
     # Preload all voices so switching works offline later
     def preload_voices(self):
@@ -641,11 +655,11 @@ class SpeechEngine:
     # Generate and play one phrase
     def speak_phrase(self, text, voice, speed):
         if self.pipeline is None or self.model is None:
-            self.handle_error('Speech engine not ready.', context=f"Skipped '{text}'")
+            self.handle_error('Speech engine not ready.', f"Skipped '{text}'", True)
             return
 
         if not self.try_load_voice(voice):
-            self.handle_error(f"Voice {voice} unavailable.", context=f"Skipped '{text}'")
+            self.handle_error(f"Voice {voice} unavailable.", f"Skipped '{text}'", True)
             return
 
         self.cancel_flag.clear()
@@ -666,15 +680,15 @@ class SpeechEngine:
                     break
 
                 generate_seconds = time.perf_counter() - chunk_start
-                audio_seconds = len(audio) / AUDIO_SAMPLE_RATE
+                audio_seconds = len(audio) / 24000
                 total_audio_seconds += audio_seconds
                 total_generate_seconds += generate_seconds
 
                 # Write wav file
-                wav_name = str(self.audio_counter).zfill(AUDIO_NAME_WIDTH) + '.wav'
+                wav_name = str(self.audio_counter).zfill(3) + '.wav'
                 self.audio_counter += 1
                 wav_path = os.path.join(AUDIO_DIR, wav_name)
-                soundfile.write(wav_path, audio, AUDIO_SAMPLE_RATE)
+                soundfile.write(wav_path, audio, 24000)
 
                 # Play wav file
                 if self.cancel_flag.is_set():
@@ -682,7 +696,7 @@ class SpeechEngine:
                 self.play_wav(wav_path)
                 chunk_start = time.perf_counter()
         except Exception as error:
-            self.handle_error(error, context=f"Failed while speaking '{text}'")
+            self.handle_error(error, f"Failed while speaking '{text}'", True)
             return
 
         self.stop_player()
@@ -700,7 +714,10 @@ class SpeechEngine:
                 self.stop_player()
                 return
             if self.player_process.poll() is not None:
+                exit_code = self.player_process.returncode
                 self.player_process = None
+                if exit_code != 0:
+                    raise RuntimeError(f'{PLAYER} failed with exit code {exit_code}')
                 return
             time.sleep(0.05)
 
@@ -713,6 +730,49 @@ class SpeechEngine:
             except subprocess.TimeoutExpired:
                 self.player_process.kill()
         self.player_process = None
+
+# Return path to a cached voice file when present
+def voice_cache_path(voice):
+    if not os.path.isdir(MODEL_CACHE_DIR):
+        return None
+    for snapshot_name in os.listdir(MODEL_CACHE_DIR):
+        voice_path = os.path.join(MODEL_CACHE_DIR, snapshot_name, 'voices', voice + '.pt')
+        if os.path.isfile(voice_path):
+            return voice_path
+    return None
+
+# Return true when every voice file is cached locally
+def all_voices_cached():
+    for voice in VOICES:
+        if voice_cache_path(voice) is None:
+            return False
+    return True
+
+# Allow huggingface downloads when voices are missing from cache
+def enable_online_for_downloads():
+    os.environ.pop('HF_HUB_OFFLINE', None)
+
+# Return true when public internet responds to ping
+def network_available():
+    result = subprocess.run(['ping', '-c', '1', '-W', '2', '1.1.1.1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+# Return true when downloads are not possible
+def is_offline():
+    if os.environ.get('HF_HUB_OFFLINE') == '1':
+        return True
+    return not network_available()
+
+# Use local cache only when all voices are already downloaded
+def enable_offline_if_cached():
+    if all_voices_cached():
+        os.environ['HF_HUB_OFFLINE'] = '1'
+
+# Quit early when offline without cached voices
+def check_offline_cache():
+    if is_offline() and not all_voices_cached():
+        print('Offline and voices not cached. Run once online to download, or run ./tools-offline.sh --fix.')
+        sys.exit(1)
 
 # Main
 if __name__ == '__main__':

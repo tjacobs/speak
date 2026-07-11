@@ -17,15 +17,17 @@ CACHE_DIR = os.path.join(SCRIPT_DIR, 'cache')
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 ONLINE_TIMEOUT_SECONDS = 30
 OFFLINE_TIMEOUT_SECONDS = 30
-MIN_WAV_COUNT = 1
+STEP_NAME_WIDTH = 19
 GREEN = '\033[92m'
 RED = '\033[91m'
 RESET = '\033[0m'
-INTERNET_BLOCKED = False
-STEP_NAME_WIDTH = 19
 
+# State
+INTERNET_BLOCKED = False
+
+# Main
 def main():
-    # Parse args and optionally clear cache and audio dirs
+    # Parse args
     fresh = parse_args()
     signal.signal(signal.SIGINT, handle_interrupt)
     if fresh:
@@ -47,8 +49,8 @@ def main():
     failed |= not run_step('Online say.py', lambda: run_say(['--test'], *device()))
 
     # Run cpu mode tests
-    failed |= not run_step('CPU speak.py --cpu', lambda: run_speak(['--cpu'], 'Device: cpu', 'GPU: disabled'))
-    failed |= not run_step('CPU say.py --cpu', lambda: run_say(['--test', '--cpu'], 'Device: cpu', 'GPU: disabled'))
+    failed |= not run_step('CPU speak.py', lambda: run_speak(['--cpu'], 'Device: cpu', 'GPU: disabled'))
+    failed |= not run_step('CPU say.py', lambda: run_say(['--test', '--cpu'], 'Device: cpu', 'GPU: disabled'))
 
     # Run offline tests
     blocked = try_block_internet()
@@ -87,8 +89,13 @@ def clean_dirs():
 
 # Run one named test step
 def run_step(name, function):
+    # Print
     print(f"== {name:<{STEP_NAME_WIDTH}} == ", end='', flush=True)
+
+    # Run
     result = function()
+
+    # Check result
     if isinstance(result, tuple):
         passed, detail = result
     else:
@@ -103,6 +110,7 @@ def run_step(name, function):
 
 # Return true when public internet responds to ping
 def check_online():
+    # Ping
     result = subprocess.run(['ping', '-c', '1', '-W', '2', '1.1.1.1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return result.returncode == 0
 
@@ -148,7 +156,7 @@ def run_script(script, args, expects, env, timeout):
             return False, f"Missing in output: {expected}\n{output}"
 
     # Check wav files were written
-    if len(glob.glob(os.path.join(AUDIO_DIR, '*.wav'))) < MIN_WAV_COUNT:
+    if len(glob.glob(os.path.join(AUDIO_DIR, '*.wav'))) < 1:
         return False, f"Missing wav files in {AUDIO_DIR}"
     return True, None
 
