@@ -11,4 +11,4 @@ echo "Available:"
 cat "${AVAILABLE}"
 
 echo "Set: "
-echo "echo ondemand | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
+echo "echo schedutil | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"

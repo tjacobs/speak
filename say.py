@@ -21,6 +21,13 @@ PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
 os.environ['HF_HUB_VERBOSITY'] = 'error'
 
+# Use local cache only when the model is already downloaded
+def enable_offline_if_cached():
+    if os.path.isdir(MODEL_CACHE_DIR) and os.listdir(MODEL_CACHE_DIR):
+        os.environ['HF_HUB_OFFLINE'] = '1'
+
+enable_offline_if_cached()
+
 # Limit torch thread pools before kokoro imports torch
 TORCH_THREADS = '4'
 os.environ['OMP_NUM_THREADS'] = TORCH_THREADS
@@ -30,15 +37,18 @@ os.environ['OPENBLAS_NUM_THREADS'] = TORCH_THREADS
 # Parse command line arguments
 def parse_args():
     force_cpu = False
+    test_mode = False
     for argument in sys.argv[1:]:
         if argument == '--cpu':
             force_cpu = True
+        elif argument == '--test':
+            test_mode = True
         else:
             print(f"Unknown argument: {argument}")
             sys.exit(1)
-    return force_cpu
+    return force_cpu, test_mode
 
-FORCE_CPU = parse_args()
+FORCE_CPU, TEST_MODE = parse_args()
 if FORCE_CPU:
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
@@ -66,7 +76,8 @@ def print_banner(phrases):
     print()
 
 # Print banner before heavy imports
-print_banner(load_phrases())
+if not TEST_MODE:
+    print_banner(load_phrases())
 IMPORT_START = time.perf_counter()
 
 # Ignore warnings
@@ -146,9 +157,6 @@ def print_system_info(perf_set):
         print("GPU: not available")
     print(f"Device: {DEVICE}")
 
-CPU_PERF_SET = set_cpu_mode(CPU_PERF_MODE)
-print_system_info(CPU_PERF_SET)
-
 # Model repo
 REPO_ID = 'hexgrad/Kokoro-82M'
 
@@ -160,8 +168,10 @@ SPEED_MIN = 0.5
 SPEED_MAX = 2.0
 AUDIO_SAMPLE_RATE = 24000
 REALTIME_DECIMALS = 1
+TIMING_DECIMALS = 1
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 AUDIO_NAME_WIDTH = 3
+TEST_WAIT_SECONDS = 300
 
 # All voices for manual cycling
 VOICES = [
@@ -186,15 +196,27 @@ OUTPUT_LOCK = threading.Lock()
 
 # Run the interactive say tool
 def main():
+    # Set cpu perf mode to performance, restore when done
+    saved_cpu_mode = get_cpu_mode()
+    perf_set = set_cpu_mode(CPU_PERF_MODE)
+    print_system_info(perf_set)
+
     # Start the speech engine
     engine = SpeechEngine()
     engine.start()
+    if engine.load_failed:
+        return
 
     try:
-        # Handle keyboard input until quit
-        run_input_loop(engine, load_phrases())
+        # Run test phrases or handle keyboard input until quit
+        if TEST_MODE:
+            run_test_loop(engine, load_phrases())
+        else:
+            run_input_loop(engine, load_phrases())
     finally:
         engine.stop()
+        if saved_cpu_mode:
+            set_cpu_mode(saved_cpu_mode)
 
 # Update status in place on one line
 def write_status(text):
@@ -233,6 +255,24 @@ def read_line(prompt):
         sys.stdout.write('\n' + prompt)
         sys.stdout.flush()
     return input()
+
+# Queue two preset phrases and wait for speech to finish
+def run_test_loop(engine, phrases):
+    keys = sorted(phrases.keys())[:2]
+    for key in keys:
+        engine.enqueue(phrases[key])
+    wait_until_idle(engine)
+    write_line("Test done.")
+
+# Wait until engine is idle with an empty queue
+def wait_until_idle(engine):
+    deadline = time.time() + TEST_WAIT_SECONDS
+    while time.time() < deadline:
+        if engine.state == 'idle' and engine.queue_size() == 0 and engine.player_process is None:
+            return
+        time.sleep(0.1)
+    write_line("Test timed out.")
+    sys.exit(1)
 
 # Handle keyboard commands
 def run_input_loop(engine, phrases):
@@ -364,6 +404,7 @@ class SpeechEngine:
         self.last_custom = ''
         self.available_voices = set()
         self.pipelines = {}
+        self.load_failed = False
 
     # Store last typed custom phrase
     def set_last_custom(self, text):
@@ -381,10 +422,15 @@ class SpeechEngine:
         self.running = True
         self.worker = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker.start()
-        print_status(self, "Loading model, please wait...")
+        print("Loading model...")
+        load_start = time.perf_counter()
         self.queue.put(('__load__', None, None, None))
-        while self.model is None and self.running:
+        while self.model is None and self.running and not self.load_failed:
             time.sleep(0.1)
+        if self.model is not None:
+            load_seconds = time.perf_counter() - load_start
+            print(f"Load model: {load_seconds:.{TIMING_DECIMALS}f}s")
+            print_status(self, "Ready.")
 
     # Stop worker and cancel playback
     def stop(self):
@@ -481,18 +527,6 @@ class SpeechEngine:
             self.available_voices.add(voice)
             return True
         except Exception as error:
-            if 'HF_HUB_OFFLINE' in os.environ:
-                try:
-                    del os.environ['HF_HUB_OFFLINE']
-                    pipeline = self.get_pipeline(voice[0])
-                    pipeline.load_voice(voice)
-                    self.available_voices.add(voice)
-                    if len(self.available_voices) == len(VOICES):
-                        os.environ['HF_HUB_OFFLINE'] = '1'
-                    return True
-                except Exception as retry_error:
-                    write_line(format_status(self, state='error', message=f"Voice {voice} unavailable: {format_error(retry_error)}"))
-                    return False
             write_line(format_status(self, state='error', message=f"Voice {voice} unavailable: {format_error(error)}"))
             return False
 
@@ -539,20 +573,15 @@ class SpeechEngine:
     def load_model(self):
         try:
             self.state = 'loading'
-
-            # Allow voice downloads on first run
-            if 'HF_HUB_OFFLINE' in os.environ:
-                del os.environ['HF_HUB_OFFLINE']
-
             self.model = kokoro.KModel(repo_id=REPO_ID, disable_complex=DISABLE_COMPLEX).to(DEVICE).eval()
             lang_code = self.voice[0]
             self.pipeline = self.get_pipeline(lang_code)
             self.preload_voices()
             self.state = 'idle'
-            print_status(self, "Ready.")
         except Exception as error:
             self.model = None
             self.pipeline = None
+            self.load_failed = True
             self.handle_error(error, context='Model load failed')
 
     # Preload all voices so switching works offline later
@@ -568,7 +597,7 @@ class SpeechEngine:
                     self.available_voices.add(voice)
                     voices_loaded += 1
                 except Exception as error:
-                    write_line(format_status(self, state='loading', message=f"Skipped voice {voice}: {format_error(error)}"))
+                    print(f"Skipped voice {voice}: {format_error(error)}")
         lang_code = self.voice[0]
         self.pipeline = self.get_pipeline(lang_code)
 
