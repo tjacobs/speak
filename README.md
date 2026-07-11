@@ -55,9 +55,10 @@ Pass `--test` to speak the first two preset phrases and exit.
 
 ```bash
 ./test.py
+./test.py --fresh
 ```
 
-Clears `cache/` and `audio/`, then runs `speak.py` and `say.py --test` online, with `--cpu`, and offline. Requires internet for the first run.
+Runs `speak.py` and `say.py --test` online, with `--cpu`, and offline. Pass `--fresh` to clear `cache/` and `audio/` first. Requires internet when the model is not cached.
 
 ## Tools
 
