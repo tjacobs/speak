@@ -16,7 +16,7 @@ Both use CUDA when available. Pass `--cpu` to force CPU inference.
 ./say.py --cpu
 ```
 
-On startup both print import time, CPU governor, GPU info, and device. With `--cpu`, GPU shows as `disabled`.
+On startup both print import time, CPU info, GPU info, and device. With `--cpu`, GPU shows as `disabled`.
 
 ## Setup
 
@@ -54,7 +54,7 @@ Generated audio files are saved in `audio/`.
 ## Tools
 
 - `tools-offline.sh` — block internet for offline testing, `./tools-offline.sh --fix` to restore
-- `tools-perf.sh` — show CPU governor options
+- `tools-perf.sh` — show CPU info
 
 ## Notes
 
