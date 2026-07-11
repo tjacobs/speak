@@ -21,9 +21,38 @@ PHRASES_PATH = os.path.join(SCRIPT_DIR, 'phrases.json')
 os.environ['HF_HUB_CACHE'] = CACHE_DIR
 os.environ['HF_HUB_VERBOSITY'] = 'error'
 
-# Use local cache only when the model is already downloaded
+# All voices for manual cycling
+VOICES = [
+    'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica', 'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
+    'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa',
+    'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+    'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+]
+
+# Return path to a cached voice file when present
+def voice_cache_path(voice):
+    if not os.path.isdir(MODEL_CACHE_DIR):
+        return None
+    for snapshot_name in os.listdir(MODEL_CACHE_DIR):
+        voice_path = os.path.join(MODEL_CACHE_DIR, snapshot_name, 'voices', voice + '.pt')
+        if os.path.isfile(voice_path):
+            return voice_path
+    return None
+
+# Return true when every voice file is cached locally
+def all_voices_cached():
+    for voice in VOICES:
+        if voice_cache_path(voice) is None:
+            return False
+    return True
+
+# Allow huggingface downloads when voices are missing from cache
+def enable_online_for_downloads():
+    os.environ.pop('HF_HUB_OFFLINE', None)
+
+# Use local cache only when all voices are already downloaded
 def enable_offline_if_cached():
-    if os.path.isdir(MODEL_CACHE_DIR) and os.listdir(MODEL_CACHE_DIR):
+    if all_voices_cached():
         os.environ['HF_HUB_OFFLINE'] = '1'
 
 enable_offline_if_cached()
@@ -172,14 +201,6 @@ TIMING_DECIMALS = 1
 AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
 AUDIO_NAME_WIDTH = 3
 TEST_WAIT_SECONDS = 300
-
-# All voices for manual cycling
-VOICES = [
-    'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica', 'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
-    'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam', 'am_michael', 'am_onyx', 'am_puck', 'am_santa',
-    'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
-    'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
-]
 
 # Status column widths for aligned output
 STATUS_STATE_WIDTH = 8
@@ -351,6 +372,8 @@ def run_input_loop(engine, phrases):
 def format_error(error):
     text = str(error).strip()
     if 'offline mode is enabled' in text:
+        return 'voice not cached, run say once online to download voices'
+    if 'trying to locate the file on the Hub' in text:
         return 'voice not cached, run say once online to download voices'
     if 'Cannot reach' in text:
         return 'network unavailable, voice not cached'
@@ -586,6 +609,10 @@ class SpeechEngine:
 
     # Preload all voices so switching works offline later
     def preload_voices(self):
+        if not all_voices_cached():
+            enable_online_for_downloads()
+
+        skipped = []
         voices_loaded = 0
         for lang_code in ('a', 'b'):
             pipeline = self.get_pipeline(lang_code)
@@ -597,9 +624,15 @@ class SpeechEngine:
                     self.available_voices.add(voice)
                     voices_loaded += 1
                 except Exception as error:
-                    print(f"Skipped voice {voice}: {format_error(error)}")
+                    skipped.append((voice, format_error(error)))
         lang_code = self.voice[0]
         self.pipeline = self.get_pipeline(lang_code)
+
+        # Print skipped voices on their own lines
+        if skipped:
+            write_line(f"Skipped {len(skipped)} voices:")
+            for voice, message in skipped:
+                write_line(f"  {voice}: {message}")
 
         # Use offline mode after voices are cached
         if voices_loaded == len(VOICES):
