@@ -7,6 +7,17 @@ Two tools:
 - `speak.py` — speak a fixed phrase once, with timing stats
 - `say.py` — interactive keyboard control over SSH, with preset phrases, voice and speed control
 
+Both use CUDA when available. Pass `--cpu` to force CPU inference.
+
+```bash
+./speak.py
+./speak.py --cpu
+./say.py
+./say.py --cpu
+```
+
+On startup both print import time, CPU governor, GPU info, and device. With `--cpu`, GPU shows as `disabled`.
+
 ## Setup
 
 On first run, the model and all voices download into `cache/`.
@@ -15,19 +26,11 @@ On first run, the model and all voices download into `cache/`.
 
 Speak a single block of text. Edit the `TEXT` constant in `speak.py` to change what is spoken.
 
-```bash
-./speak.py
-```
-
 Generated audio files are saved in `audio/` as `001.wav`, `002.wav`, etc.
 
 ## say.py
 
 Interactive speech tool. Press keys to speak phrases.
-
-```bash
-./say.py
-```
 
 Single keypresses work without Enter. Preset phrases are in `phrases.json`, triggered by keys `1`–`9`.
 
@@ -48,10 +51,21 @@ Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
 
 Generated audio files are saved in `audio/`.
 
+## Tools
+
+- `tools-offline.sh` — block internet for offline testing, `./tools-offline.sh --fix` to restore
+- `tools-perf.sh` — show CPU governor options
+
 ## Notes
 
 - First `say.py` launch downloads all voices and takes longer. Later launches are faster.
 - If a voice is missing, run once with network access to download it.
 - On Jetson, USB audio is configured in `/etc/asound.conf`. Both normal and `sudo aplay` use the USB card.
-- `speak.py` disables CUDA probing on CPU-only devices to avoid driver warnings on Jetson.
-- For Jetson GPU, install PyTorch from the [Jetson AI Lab](https://pypi.jetson-ai-lab.io/jp6/cu126/) index, not standard pip. Both scripts use CUDA automatically when `torch.cuda.is_available()` is true.
+- For Jetson GPU, install PyTorch from the [Jetson AI Lab](https://pypi.jetson-ai-lab.io/jp6/cu126/) index, not standard pip. Also install `numpy<2`.
+
+```bash
+.venv/bin/pip uninstall -y torch torchvision torchaudio
+.venv/bin/pip install torch==2.8.0 torchvision==0.23.0 \
+  --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+.venv/bin/pip install 'numpy<2'
+```
