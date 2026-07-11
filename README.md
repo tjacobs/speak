@@ -1,6 +1,6 @@
 # Speak
 
-Text to speech from the command line, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
+Offline text to speech generation, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
 
 Two tools:
 
