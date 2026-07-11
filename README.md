@@ -1,31 +1,13 @@
-# speak
+# Speak
 
 Text to speech from the command line, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
 
 Two tools:
 
 - `speak.py` — speak a fixed phrase once, with timing stats
-- `talk.py` — interactive keyboard control over SSH, with preset phrases, a speech queue, voice and speed control
+- `talk.py` — interactive keyboard control over SSH, with preset phrases, voice and speed control
 
 ## Setup
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install kokoro soundfile
-```
-
-On Linux, install `espeak-ng` for phonemization and `alsa-utils` for playback:
-
-```bash
-sudo apt install espeak-ng alsa-utils python3-venv
-```
-
-Your user must be in the `audio` group to access the sound card:
-
-```bash
-sudo usermod -aG audio $USER
-# log out and back in, or run: newgrp audio
-```
 
 On first run, the model and all voices download from Hugging Face into `cache/`. After that, `talk.py` works offline.
 
@@ -83,7 +65,7 @@ Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
 
 On speech errors, playback stops, the queue is cleared, and a short error message is shown. The worker keeps running so you can continue. Voice changes skip unavailable voices without clearing the queue.
 
-Generated audio files are saved in `talk_audio/`.
+Generated audio files are saved in `audio/`.
 
 ## Notes
 

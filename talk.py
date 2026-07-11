@@ -81,7 +81,9 @@ SPEED_STEP = 0.1
 SPEED_MIN = 0.5
 SPEED_MAX = 2.0
 AUDIO_SAMPLE_RATE = 24000
-AUDIO_DIR = os.path.join(SCRIPT_DIR, 'talk_audio')
+REALTIME_DECIMALS = 2
+AUDIO_DIR = os.path.join(SCRIPT_DIR, 'audio')
+AUDIO_NAME_WIDTH = 3
 
 # All voices for manual cycling
 VOICES = [
@@ -96,6 +98,7 @@ STATUS_STATE_WIDTH = 8
 STATUS_QUEUE_WIDTH = 2
 STATUS_VOICE_WIDTH = 11
 STATUS_SPEED_WIDTH = 4
+STATUS_REALTIME_WIDTH = 5
 
 # Audio player command
 PLAYER = 'afplay' if platform.system() == 'Darwin' else 'aplay'
@@ -242,13 +245,21 @@ def format_error(error):
         return text[:77] + '...'
     return text
 
+# Format realtime generation speed for status output
+def format_realtime(speed):
+    return f"{speed:.{REALTIME_DECIMALS}f}x"
+
 # Format aligned status prefix
 def format_status(engine, state=None, message=''):
     state = state or engine.state_label()
+    if engine.last_realtime_speed is None:
+        realtime = f"{'--':>{STATUS_REALTIME_WIDTH}}"
+    else:
+        realtime = f"{format_realtime(engine.last_realtime_speed):>{STATUS_REALTIME_WIDTH}}"
     prefix = (
         f"[{state:<{STATUS_STATE_WIDTH}} | queue {engine.queue_size():>{STATUS_QUEUE_WIDTH}} | "
         f"{engine.voice:<{STATUS_VOICE_WIDTH}} | "
-        f"{engine.speed:>{STATUS_SPEED_WIDTH}.1f}x]"
+        f"{engine.speed:>{STATUS_SPEED_WIDTH}.1f}x | {realtime}]"
     )
     if message:
         return f"{prefix} {message}"
@@ -273,6 +284,7 @@ class SpeechEngine:
         self.voice_index = VOICES.index('bm_fable')
         self.voice = VOICES[self.voice_index]
         self.speed = DEFAULT_SPEED
+        self.last_realtime_speed = None
         self.model = None
         self.pipeline = None
         self.audio_counter = 0
@@ -425,7 +437,7 @@ class SpeechEngine:
 
     # Return status summary text
     def status_text(self):
-        return f"{self.state}, queue {self.queue_size()}, {self.voice}, speed {self.speed:.1f}"
+        return f"{self.state}, queue {self.queue_size()}, {self.voice}, speed {self.speed:.1f}, realtime {self.last_realtime_speed}"
 
     # Background loop that loads model and speaks queued phrases
     def worker_loop(self):
@@ -510,31 +522,43 @@ class SpeechEngine:
         self.state = 'speaking'
         print_status(self, f"Speaking: {text}")
 
+        total_audio_seconds = 0
+        total_generate_seconds = 0
+
         try:
             # Generate and play each chunk
             pipeline = self.get_pipeline(voice[0])
             self.pipeline = pipeline
             generator = pipeline(text, voice=voice, speed=speed)
+            chunk_start = time.perf_counter()
             for chunk_index, (graphemes, phonemes, audio) in enumerate(generator):
                 if self.cancel_flag.is_set():
                     break
 
+                generate_seconds = time.perf_counter() - chunk_start
+                audio_seconds = len(audio) / AUDIO_SAMPLE_RATE
+                total_audio_seconds += audio_seconds
+                total_generate_seconds += generate_seconds
+
                 # Write wav file
                 self.audio_counter += 1
-                wav_path = os.path.join(AUDIO_DIR, f'{self.audio_counter}.wav')
+                wav_name = str(self.audio_counter).zfill(AUDIO_NAME_WIDTH) + '.wav'
+                wav_path = os.path.join(AUDIO_DIR, wav_name)
                 soundfile.write(wav_path, audio, AUDIO_SAMPLE_RATE)
 
                 # Play wav file
                 if self.cancel_flag.is_set():
                     break
                 self.play_wav(wav_path)
+                chunk_start = time.perf_counter()
         except Exception as error:
             self.handle_error(error, context=f"Failed while speaking '{text}'")
             return
 
         self.stop_player()
         self.state = 'idle'
-        if not self.cancel_flag.is_set():
+        if not self.cancel_flag.is_set() and total_generate_seconds > 0:
+            self.last_realtime_speed = total_audio_seconds / total_generate_seconds
             print_status(self, "Done.")
 
     # Play wav file and allow cancellation
