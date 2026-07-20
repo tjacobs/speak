@@ -340,18 +340,36 @@ def load_phrases():
     with open(PHRASES_PATH) as phrases_file:
         return json.load(phrases_file)
 
-# Return card index for the first USB sound device
+# Return true when a card has a capture stream
+def card_has_capture(card_index):
+    stream_path = f'/proc/asound/card{card_index}/stream0'
+    if not os.path.isfile(stream_path):
+        return False
+    with open(stream_path) as stream_file:
+        return 'Capture:' in stream_file.read()
+
+# Return card index for the playback-only USB sound device
 def find_usb_card():
     cards_path = '/proc/asound/cards'
     if not os.path.isfile(cards_path):
         return None
+
+    # Collect USB card indexes
+    usb_cards = []
     with open(cards_path) as cards_file:
         for line in cards_file:
             if 'USB-Audio' not in line:
                 continue
             card_index_text = line.strip().split(None, 1)[0]
             if card_index_text.isdigit():
-                return int(card_index_text)
+                usb_cards.append(int(card_index_text))
+
+    # Prefer the speaker-only card, one without a mic
+    for card_index in usb_cards:
+        if not card_has_capture(card_index):
+            return card_index
+    if usb_cards:
+        return usb_cards[0]
     return None
 
 # Build playback command for one wav file

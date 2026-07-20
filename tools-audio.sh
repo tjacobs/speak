@@ -12,6 +12,7 @@ UDEV_RULE_PATH="/etc/udev/rules.d/99-speak-usb-audio.rules"
 SETUP_LINK_PATH="/usr/local/bin/speak-usb-audio"
 SYSTEM_ASOUND_PATH="/etc/asound.conf"
 USER_ASOUND_PATH="${HOME}/.asoundrc"
+BLACKLIST_PATH="/etc/modprobe.d/blacklist-speak-internal-audio.conf"
 
 # Re-exec with sudo when installing system files
 if [[ "${1:-}" == "--install" && "${EUID}" -ne 0 ]]; then
@@ -53,20 +54,37 @@ parse_args() {
     done
 }
 
-# Return card index for the first USB sound device
+# Return true when a card has a capture stream
+card_has_capture() {
+    local card_index="$1"
+    grep -q 'Capture:' "/proc/asound/card${card_index}/stream0" 2>/dev/null
+}
+
+# Return card index for the playback-only USB sound device
 find_usb_card() {
-    local line card_index
+    local line card_index usb_cards=()
 
     # Scan proc sound cards for USB audio
     while IFS= read -r line; do
         if [[ "${line}" =~ ^[[:space:]]*([0-9]+)[[:space:]]+.*USB-Audio ]]; then
             card_index="${BASH_REMATCH[1]}"
             if [[ -d "/sys/class/sound/card${card_index}" ]]; then
-                echo "${card_index}"
-                return 0
+                usb_cards+=("${card_index}")
             fi
         fi
     done < /proc/asound/cards
+
+    # Prefer the speaker-only card, one without a mic
+    for card_index in "${usb_cards[@]}"; do
+        if ! card_has_capture "${card_index}"; then
+            echo "${card_index}"
+            return 0
+        fi
+    done
+    if [[ "${#usb_cards[@]}" -gt 0 ]]; then
+        echo "${usb_cards[0]}"
+        return 0
+    fi
     return 1
 }
 
@@ -204,6 +222,22 @@ configure_audio() {
     echo "Wrote ${USER_ASOUND_PATH}"
 }
 
+# Blacklist Jetson internal audio drivers so only USB cards register
+install_blacklist() {
+    cat > "${BLACKLIST_PATH}" <<EOF
+# Added by speak tools-audio.sh, keeps HDMI and APE audio out of ALSA
+blacklist snd_hda_tegra
+install snd_hda_tegra /bin/false
+blacklist snd_soc_tegra_machine_driver
+install snd_soc_tegra_machine_driver /bin/false
+EOF
+
+    # Unload now so a reboot is not required
+    rmmod snd_hda_tegra 2>/dev/null || true
+    rmmod snd_soc_tegra_machine_driver 2>/dev/null || true
+    echo "Installed ${BLACKLIST_PATH}"
+}
+
 # Install udev rule, then apply settings
 install_system() {
     local target_user target_home
@@ -221,6 +255,7 @@ EOF
 
     echo "Installed ${UDEV_RULE_PATH}"
     echo "Installed ${SETUP_LINK_PATH}"
+    install_blacklist
 
     # Apply for the login user, not root
     if [[ -n "${target_home}" && "${target_home}" != "/root" ]]; then

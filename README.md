@@ -2,10 +2,11 @@
 
 Offline text to speech generation, using the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model.
 
-Two tools:
+Three tools:
 
 - `speak.py` — speak a fixed phrase once, with timing stats
 - `say.py` — interactive keyboard control over SSH, with preset phrases, voice and speed control
+- `listen.py` — live speech to text from the microphone, using [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 
 Both use CUDA when available. Pass `--cpu` to force CPU inference.
 
@@ -50,6 +51,19 @@ Default speed is 1.5x. Use `+` / `-` to adjust, `v` to change voice.
 Generated audio files are saved in `audio/`.
 
 Pass `--test` to speak the first two preset phrases and exit.
+
+## listen.py
+
+Live transcription from the microphone. Speak and lines print as you talk, CTRL-C to stop.
+
+```bash
+./install_listen.sh
+./listen.py
+```
+
+`install_listen.sh` clones and builds [CTranslate2](https://github.com/OpenNMT/CTranslate2) with CUDA for the Jetson GPU, then installs it and faster-whisper into `.venv`. The build takes around 30 minutes and only runs once.
+
+Records from the first USB soundcard with a mic. Uses the whisper `base` model on GPU with voice activity detection.
 
 ## Testing
 
