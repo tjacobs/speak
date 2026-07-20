@@ -340,6 +340,29 @@ def load_phrases():
     with open(PHRASES_PATH) as phrases_file:
         return json.load(phrases_file)
 
+# Return card index for the first USB sound device
+def find_usb_card():
+    cards_path = '/proc/asound/cards'
+    if not os.path.isfile(cards_path):
+        return None
+    with open(cards_path) as cards_file:
+        for line in cards_file:
+            if 'USB-Audio' not in line:
+                continue
+            card_index_text = line.strip().split(None, 1)[0]
+            if card_index_text.isdigit():
+                return int(card_index_text)
+    return None
+
+# Build playback command for one wav file
+def play_wav_command(wav_path):
+    if PLAYER == 'afplay':
+        return [PLAYER, wav_path]
+    card = find_usb_card()
+    if card is None:
+        return [PLAYER, wav_path]
+    return [PLAYER, '-D', f'plughw:{card},0', wav_path]
+
 # Return true when audio player is available
 def check_audio_player():
     if shutil.which(PLAYER) is None:
@@ -348,6 +371,8 @@ def check_audio_player():
         result = subprocess.run(['aplay', '-l'], capture_output=True)
         if result.returncode != 0:
             return False, 'no audio device found'
+        if find_usb_card() is None:
+            return False, 'no USB audio device found, plug one in and run ./tools-audio.sh'
     return True, None
 
 # Format exception text for status lines
@@ -690,7 +715,7 @@ class SpeechEngine:
     # Play wav file and allow cancellation
     def play_wav(self, wav_path):
         self.stop_player()
-        self.player_process = subprocess.Popen([PLAYER, wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.player_process = subprocess.Popen(play_wav_command(wav_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         while True:
             if self.cancel_flag.is_set():
                 self.stop_player()

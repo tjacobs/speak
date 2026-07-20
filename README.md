@@ -62,6 +62,7 @@ Runs `speak.py` and `say.py --test` online, with `--cpu`, and offline. Pass `--f
 
 ## Tools
 
+- `tools-audio.sh` — route audio to any USB soundcard, disable HDMI and APE outputs. Run `./tools-audio.sh --install` once, then `./tools-audio.sh` after plugging in a new adapter
 - `tools-offline.sh` — block internet for offline testing, `./tools-offline.sh --fix` to restore
 - `tools-perf.sh` — show CPU info
 

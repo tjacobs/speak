@@ -142,7 +142,7 @@ def generate_and_play(voice, text):
 
         # Play wav file
         play_start = time.perf_counter()
-        play_result = subprocess.run([audio_player(), wav_path], capture_output=True)
+        play_result = subprocess.run(play_wav_command(wav_path), capture_output=True)
         if play_result.returncode != 0:
             exit_error(f'Audio playback failed, {audio_player()} returned exit code {play_result.returncode}.')
         play_seconds = time.perf_counter() - play_start
@@ -243,6 +243,30 @@ def set_cpu_mode(mode):
             return False
     return True
 
+# Return card index for the first USB sound device
+def find_usb_card():
+    cards_path = '/proc/asound/cards'
+    if not os.path.isfile(cards_path):
+        return None
+    with open(cards_path) as cards_file:
+        for line in cards_file:
+            if 'USB-Audio' not in line:
+                continue
+            card_index_text = line.strip().split(None, 1)[0]
+            if card_index_text.isdigit():
+                return int(card_index_text)
+    return None
+
+# Build playback command for one wav file
+def play_wav_command(wav_path):
+    player = audio_player()
+    if player == 'afplay':
+        return [player, wav_path]
+    card = find_usb_card()
+    if card is None:
+        return [player, wav_path]
+    return [player, '-D', f'plughw:{card},0', wav_path]
+
 # Return true when audio player is available
 def check_audio_player():
     player = audio_player()
@@ -252,6 +276,8 @@ def check_audio_player():
         result = subprocess.run(['aplay', '-l'], capture_output=True)
         if result.returncode != 0:
             return False, 'no audio device found'
+        if find_usb_card() is None:
+            return False, 'no USB audio device found, plug one in and run ./tools-audio.sh'
     return True, None
 
 # Return audio player command for this platform
