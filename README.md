@@ -77,9 +77,18 @@ Runs `speak.py` and `say.py --test` online, with `--cpu`, and offline. Pass `--f
 ## Tools
 
 - `tools-audio.sh` — route audio to any USB soundcard, disable HDMI and APE outputs. Run `./tools-audio.sh --install` once, then `./tools-audio.sh` after plugging in a new adapter
+- `tools-power.sh` — set Jetson power mode. No args shows status
+
+```bash
+./tools-power.sh        # status
+./tools-power.sh min    # 15W, coolest/quietest, clocks scale with load
+./tools-power.sh mid    # 25W, balanced
+./tools-power.sh max    # 25W uncapped, full performance, clocks locked high
+```
+
 - `tools-offline.sh` — block internet for offline testing, `./tools-offline.sh --fix` to restore
-- `tools-perf.sh` — show CPU info
 
 ## Notes
 
 - First `say.py` launch downloads all voices and takes longer. Later launches are faster.
+- `min` / `mid` turn off `jetson_clocks` so CPU frequency can drop when idle. `max` turns it back on. `mid` and `max` are both 25W-class; `max` unlocks clocks fully (MAXN_SUPER).
