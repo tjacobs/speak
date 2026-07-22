@@ -138,7 +138,6 @@ show_status() {
     cpu_temp="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo '?')"
     fan_rpm="$(cat /sys/class/hwmon/hwmon2/rpm 2>/dev/null || echo '?')"
 
-    echo "Modes: min mid max"
     echo "Power: ${mode_label}"
     echo "CPU: ${cur_freq} MHz, range ${min_freq}-${max_freq} MHz, $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
     echo "Temp: ${cpu_temp}°C"
